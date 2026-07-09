@@ -1,0 +1,155 @@
+services:
+  # --- Backing services -----------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-approvalflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-approvalflow}
+      POSTGRES_DB: ${POSTGRES_DB:-approvalflow}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # Dapr actor placement service, shared by all sidecars.
+  placement:
+    image: daprio/placement:1.14.4
+    command: ["./placement", "-port", "50006"]
+
+  # --- API Gateway (externally exposed) -------------------------------------
+  api-gateway:
+    build: ./services/api-gateway
+    environment:
+      SERVICE_NAME: api-gateway
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+
+  api-gateway-dapr:
+    image: daprio/daprd:1.14.4
+    command:
+      - "./daprd"
+      - "-app-id"
+      - "api-gateway"
+      - "-app-port"
+      - "8000"
+      - "-dapr-http-port"
+      - "3500"
+      - "-placement-host-address"
+      - "placement:50006"
+      - "-resources-path"
+      - "/components"
+    volumes:
+      - ./dapr/components:/components
+      - ./dapr/secrets:/dapr-secrets
+    depends_on:
+      - api-gateway
+      - placement
+      - redis
+    network_mode: "service:api-gateway"
+
+  # --- Workflow service (internal) ------------------------------------------
+  workflow-service:
+    build: ./services/workflow-service
+    environment:
+      SERVICE_NAME: workflow-service
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      - redis
+
+  workflow-service-dapr:
+    image: daprio/daprd:1.14.4
+    command:
+      - "./daprd"
+      - "-app-id"
+      - "workflow-service"
+      - "-app-port"
+      - "8000"
+      - "-placement-host-address"
+      - "placement:50006"
+      - "-resources-path"
+      - "/components"
+    volumes:
+      - ./dapr/components:/components
+      - ./dapr/secrets:/dapr-secrets
+    depends_on:
+      - workflow-service
+      - placement
+      - redis
+    network_mode: "service:workflow-service"
+
+  # --- Decision service (internal) ------------------------------------------
+  decision-service:
+    build: ./services/decision-service
+    environment:
+      SERVICE_NAME: decision-service
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      - redis
+
+  decision-service-dapr:
+    image: daprio/daprd:1.14.4
+    command:
+      - "./daprd"
+      - "-app-id"
+      - "decision-service"
+      - "-app-port"
+      - "8000"
+      - "-placement-host-address"
+      - "placement:50006"
+      - "-resources-path"
+      - "/components"
+    volumes:
+      - ./dapr/components:/components
+      - ./dapr/secrets:/dapr-secrets
+    depends_on:
+      - decision-service
+      - placement
+      - redis
+    network_mode: "service:decision-service"
+
+  # --- Payment service (internal) -------------------------------------------
+  payment-service:
+    build: ./services/payment-service
+    environment:
+      SERVICE_NAME: payment-service
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      - redis
+
+  payment-service-dapr:
+    image: daprio/daprd:1.14.4
+    command:
+      - "./daprd"
+      - "-app-id"
+      - "payment-service"
+      - "-app-port"
+      - "8000"
+      - "-placement-host-address"
+      - "placement:50006"
+      - "-resources-path"
+      - "/components"
+    volumes:
+      - ./dapr/components:/components
+      - ./dapr/secrets:/dapr-secrets
+    depends_on:
+      - payment-service
+      - placement
+      - redis
+    network_mode: "service:payment-service"
+
+  # --- UI (externally exposed) ----------------------------------------------
+  ui:
+    build: ./ui
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api-gateway
+
+volumes:
+  postgres_data:
