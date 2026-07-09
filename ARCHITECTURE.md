@@ -71,17 +71,54 @@ flowchart LR
 
 ## Planned invoice flow
 
-Not implemented yet. The planned flow is:
+The planned flow is:
 
-1. A submitter creates an invoice in the UI. The API Gateway validates the request and forwards it to workflow-service.
-2. workflow-service persists the invoice with status `received` and asks decision-service for a route.
-3. decision-service checks the invoice against policy and returns one of: `auto_approve`, `human_review`, or `reject`.
-4. Items routed to `human_review` wait in the approver queue until a person approves or rejects them.
-5. Approved invoices move on to the payment flow below.
+The planned flow is:
+
+1. A submitter creates an invoice in the UI.
+2. The API Gateway validates the request and forwards it to workflow-service.
+3. workflow-service persists the invoice with status `received` and returns a `tracking_id`.
+4. The invoice is then routed to decision-service for policy checks and a routing decision.
+5. decision-service returns one of: `auto_approve`, `human_review`, or `reject`.
+6. Items routed to `human_review` wait in the approver queue until a person approves or rejects them.
+7. Approved invoices move on to the payment flow below.
+
+## Planned invoice sequence
+
+This sequence shows the planned invoice submission and
+routing flow after the business endpoints are added.
+
+```mermaid
+sequenceDiagram
+    participant U as React UI
+    participant G as api-gateway
+    participant W as workflow-service
+    participant D as decision-service
+    participant P as payment-service
+    participant DB as PostgreSQL
+
+    U->>G: POST /invoices
+    G->>W: Submit invoice
+    W->>DB: Save invoice with status=received
+    W-->>G: 202 Accepted + tracking_id
+    G-->>U: 202 Accepted + tracking_id
+
+    W->>D: Evaluate invoice
+    D-->>W: decision result
+
+    alt auto approve
+        W->>DB: Update status=approved
+        W->>P: Request payment
+    else human review
+        W->>DB: Update status=pending_review
+    else reject
+        W->>DB: Update status=rejected
+    end
+```
 
 ## Planned payment flow and compensation
 
-Not implemented yet. Payment runs as a short sequence of steps, and each failing step has a compensation path so the system never ends in a half-paid state:
+Payment runs as a short sequence of steps, and each failing step has a compensation path so the system never ends in a half-paid state:
 
 ```mermaid
 flowchart TD
