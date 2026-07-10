@@ -3,8 +3,7 @@ import logging
 import sys
 from contextvars import ContextVar
 
-# Correlation id is carried per-request via a context variable so log records
-# can include it without threading the value through every function call.
+# per-request correlation id, picked up by the log filter below
 correlation_id_var: ContextVar[str] = ContextVar("correlation_id", default="-")
 
 

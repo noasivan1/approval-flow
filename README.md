@@ -54,6 +54,15 @@ Stop the system:
 docker compose down
 ```
 
+## API
+
+Public endpoints on api-gateway:
+
+- `POST /invoices` — submit an invoice. Returns a `tracking_id` and status `received`.
+- `GET /invoices/{tracking_id}` — returns the invoice status and details, or 404.
+
+Invoices are stored by workflow-service: in PostgreSQL when running with docker compose, in memory otherwise. Approval decisions and payments are not implemented yet.
+
 ## Tests
 
 Tests do not require Docker, Dapr, Redis, or PostgreSQL.

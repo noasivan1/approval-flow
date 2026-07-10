@@ -2,7 +2,6 @@ SERVICES := api-gateway workflow-service decision-service payment-service
 
 .PHONY: install test run down logs
 
-# Install backend test dependencies for each service and UI packages.
 install:
 	@for svc in $(SERVICES); do \
 		echo "Installing services/$$svc"; \
@@ -10,7 +9,7 @@ install:
 	done
 	cd ui && npm install
 
-# Run the health tests for every backend service. No external services required.
+# runs without Docker, Redis or PostgreSQL
 test:
 	@for svc in $(SERVICES); do \
 		echo "Testing services/$$svc"; \

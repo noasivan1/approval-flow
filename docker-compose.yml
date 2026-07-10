@@ -25,6 +25,9 @@ services:
     environment:
       SERVICE_NAME: api-gateway
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Reaches workflow-service through the gateway's own Dapr sidecar.
+      WORKFLOW_SERVICE_URL: http://localhost:3500/v1.0/invoke/workflow-service/method
+      ALLOWED_ORIGINS: http://localhost:5173
     ports:
       - "8000:8000"
     depends_on:
@@ -59,8 +62,10 @@ services:
     environment:
       SERVICE_NAME: workflow-service
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-approvalflow}:${POSTGRES_PASSWORD:-approvalflow}@postgres:5432/${POSTGRES_DB:-approvalflow}
     depends_on:
       - redis
+      - postgres
 
   workflow-service-dapr:
     image: daprio/daprd:1.14.4
