@@ -8,6 +8,8 @@ const initialForm = {
   currency: "USD",
   category: "meals",
   receipt_present: true,
+  vendor_known: true,
+  attendees: "1",
   submitter_email: "dana.cohen@northwind.example",
   note: "",
 };
@@ -34,6 +36,7 @@ export default function SubmitInvoiceForm() {
       const response = await submitInvoice({
         ...form,
         amount: Number(form.amount),
+        attendees: form.category === "meals" && form.attendees ? Number(form.attendees) : null,
         note: form.note || null,
       });
       setResult(response);
@@ -81,6 +84,19 @@ export default function SubmitInvoiceForm() {
           ))}
         </select>
       </label>
+      {form.category === "meals" && (
+        <label>
+          Attendees
+          <input
+            type="number"
+            step="1"
+            min="1"
+            value={form.attendees}
+            onChange={(e) => update("attendees", e.target.value)}
+            required
+          />
+        </label>
+      )}
       <label className="form__checkbox">
         <input
           type="checkbox"
@@ -88,6 +104,14 @@ export default function SubmitInvoiceForm() {
           onChange={(e) => update("receipt_present", e.target.checked)}
         />
         Receipt attached
+      </label>
+      <label className="form__checkbox">
+        <input
+          type="checkbox"
+          checked={form.vendor_known}
+          onChange={(e) => update("vendor_known", e.target.checked)}
+        />
+        Known vendor
       </label>
       <label>
         Submitter email

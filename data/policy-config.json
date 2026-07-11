@@ -1,0 +1,32 @@
+{
+  "autonomy_ceiling_usd": 250,
+  "autonomy_confidence": 0.8,
+  "receipt_required_over_usd": 25,
+  "meal_per_attendee_usd": 75,
+  "entertainment_justification_over_usd": 500,
+  "saas_monthly_cap_usd": 200,
+  "hardware_capital_over_usd": 1000,
+  "travel_manager_approval_over_usd": 1500,
+  "fx_hard_stop_usd": 1000,
+  "fx_rates": {
+    "EUR": 1.08,
+    "GBP": 1.27
+  },
+  "known_vendors": [
+    "Atlassian",
+    "Bistro 19",
+    "City Cabs",
+    "DataDog",
+    "Dell",
+    "ExpoWorks",
+    "Hotel Adler",
+    "Lakeside Venue",
+    "Logitech",
+    "Lufthansa",
+    "Office Depot",
+    "PixelForge",
+    "RackSpace Supplies",
+    "The Rooftop Grill",
+    "Trattoria Verde"
+  ]
+}
