@@ -55,3 +55,77 @@ body {
   color: #616e7c;
   font-size: 0.9rem;
 }
+
+.card--wide {
+  grid-column: span 2;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: #3e4c59;
+}
+
+.form input,
+.form select {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid #cbd2d9;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.form__checkbox {
+  flex-direction: row !important;
+  align-items: center;
+}
+
+.form button {
+  align-self: flex-start;
+  padding: 0.5rem 1.1rem;
+  border: none;
+  border-radius: 6px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.form button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.form__result {
+  margin: 0;
+  padding: 0.6rem;
+  border-radius: 6px;
+  background: #ecfdf3;
+  color: #14532d;
+  font-size: 0.85rem;
+  word-break: break-all;
+}
+
+.form__result p {
+  margin: 0 0 0.25rem;
+  color: inherit;
+}
+
+.form__error {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 0.85rem;
+}
+
+@media (max-width: 640px) {
+  .card--wide {
+    grid-column: span 1;
+  }
+}
