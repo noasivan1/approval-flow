@@ -124,6 +124,26 @@ body {
   font-size: 0.85rem;
 }
 
+.decision {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid #d1e7d9;
+}
+
+.decision__rules {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.decision__rule {
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: #e0e7ff;
+  color: #3730a3;
+  font-size: 0.75rem;
+}
+
 @media (max-width: 640px) {
   .card--wide {
     grid-column: span 1;

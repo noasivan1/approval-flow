@@ -59,6 +59,30 @@ export default function StatusLookup() {
             {invoice.vendor} — {invoice.amount} {invoice.currency} ({invoice.category})
           </p>
           <p>Submitted: {formatDate(invoice.created_at)}</p>
+          {invoice.decision && (
+            <div className="decision">
+              <p>
+                Route: <strong>{invoice.decision.route}</strong>
+              </p>
+              <p>{invoice.decision.plain_language_reason}</p>
+              {invoice.decision.rule_ids?.length > 0 && (
+                <p className="decision__rules">
+                  {invoice.decision.rule_ids.map((ruleId) => (
+                    <span key={ruleId} className="decision__rule">
+                      {ruleId}
+                    </span>
+                  ))}
+                </p>
+              )}
+              {invoice.decision.recommendation && (
+                <p>
+                  Recommendation: {invoice.decision.recommendation} (confidence{" "}
+                  {Number(invoice.decision.confidence).toFixed(2)})
+                </p>
+              )}
+            </div>
+          )}
+          {!invoice.decision && <p>Decision pending.</p>}
         </div>
       )}
       {notFound && <p className="form__error">No invoice found for this tracking id.</p>}

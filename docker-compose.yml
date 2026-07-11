@@ -94,6 +94,10 @@ services:
     environment:
       SERVICE_NAME: decision-service
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # mounted config so threshold changes apply without rebuilding the image
+      POLICY_CONFIG_PATH: /data/policy-config.json
+    volumes:
+      - ./data:/data:ro
     depends_on:
       - redis
 

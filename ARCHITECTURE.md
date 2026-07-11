@@ -69,24 +69,20 @@ flowchart LR
     end
 ```
 
-## Planned invoice flow
+## Invoice flow
 
-The planned flow is:
-
-The planned flow is:
+Implemented up to the decision. Submission and routing are decoupled through
+Dapr pub/sub with two topics: `invoice.received` and `invoice.decided`.
 
 1. A submitter creates an invoice in the UI.
 2. The API Gateway validates the request and forwards it to workflow-service.
-3. workflow-service persists the invoice with status `received` and returns a `tracking_id`.
-4. The invoice is then routed to decision-service for policy checks and a routing decision.
-5. decision-service returns one of: `auto_approve`, `human_review`, or `reject`.
-6. Items routed to `human_review` wait in the approver queue until a person approves or rejects them.
-7. Approved invoices move on to the payment flow below.
+3. workflow-service persists the invoice with status `received` and returns a `tracking_id`. The `invoice.received` event is published after the response; a background sweep re-publishes events that failed to go out.
+4. decision-service consumes the event, evaluates the invoice against the external policy config plus a recommendation (currently a deterministic local stub), and publishes `invoice.decided` with the route, rule ids, and reasons.
+5. workflow-service consumes the decision and updates the status to `approved`, `pending_review`, or `rejected`. Both consumers are idempotent, so re-delivered events cause no repeated changes.
+6. Items routed to `human_review` wait in the approver queue until a person approves or rejects them (not implemented yet).
+7. Approved invoices move on to the payment flow below (not implemented yet).
 
-## Planned invoice sequence
-
-This sequence shows the planned invoice submission and
-routing flow after the business endpoints are added.
+## Invoice sequence
 
 ```mermaid
 sequenceDiagram
@@ -94,7 +90,6 @@ sequenceDiagram
     participant G as api-gateway
     participant W as workflow-service
     participant D as decision-service
-    participant P as payment-service
     participant DB as PostgreSQL
 
     U->>G: POST /invoices
@@ -103,12 +98,12 @@ sequenceDiagram
     W-->>G: 202 Accepted + tracking_id
     G-->>U: 202 Accepted + tracking_id
 
-    W->>D: Evaluate invoice
-    D-->>W: decision result
+    W--)D: invoice.received (pub/sub)
+    D->>D: policy rules + recommendation
+    D--)W: invoice.decided (pub/sub)
 
     alt auto approve
         W->>DB: Update status=approved
-        W->>P: Request payment
     else human review
         W->>DB: Update status=pending_review
     else reject

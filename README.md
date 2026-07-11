@@ -59,9 +59,9 @@ docker compose down
 Public endpoints on api-gateway:
 
 - `POST /invoices` — submit an invoice. Returns a `tracking_id` and status `received`.
-- `GET /invoices/{tracking_id}` — returns the invoice status and details, or 404.
+- `GET /invoices/{tracking_id}` — returns the invoice status, details, and the decision once routed, or 404.
 
-Invoices are stored by workflow-service: in PostgreSQL when running with docker compose, in memory otherwise. Approval decisions and payments are not implemented yet.
+Invoices are stored by workflow-service: in PostgreSQL when running with docker compose, in memory otherwise. After submission the invoice is routed asynchronously over Dapr pub/sub (`invoice.received` / `invoice.decided`) to `approved`, `pending_review`, or `rejected`. Routing thresholds live in `data/policy-config.json` and are read from the mounted file, so they can change without rebuilding images. Human review actions, payments, and duplicate detection are not implemented yet.
 
 ## Tests
 

@@ -66,3 +66,38 @@ def test_unknown_tracking_id_returns_404(monkeypatch):
 
     response = client.get("/invoices/does-not-exist")
     assert response.status_code == 404
+
+
+def test_optional_structured_fields_survive_forwarding(monkeypatch):
+    forwarded = {}
+
+    async def fake_submit(payload):
+        forwarded.update(payload)
+        return {"tracking_id": "abc-123", "status": "received"}
+
+    monkeypatch.setattr(workflow_client, "submit_invoice", fake_submit)
+
+    payload = {
+        **VALID_INVOICE,
+        "vendor_known": True,
+        "attendees": 3,
+        "invoice_number": "NW-INV-7781",
+        "department": "engineering-2026Q2",
+        "line_items": [{"description": "Team lunch", "quantity": 1, "unit_price": 38.89}],
+        "tax_amount": 3.11,
+        "business_justification": "client dinner",
+        "client_name": "Northwind",
+        "travel_class": "economy",
+        "date": "2026-05-12",
+    }
+    response = client.post("/invoices", json=payload)
+    assert response.status_code == 202
+
+    for field in (
+        "vendor_known", "attendees", "invoice_number", "department",
+        "tax_amount", "business_justification", "client_name", "travel_class", "date",
+    ):
+        assert forwarded[field] == payload[field]
+    assert forwarded["line_items"] == [
+        {"description": "Team lunch", "quantity": 1, "unit_price": 38.89}
+    ]
