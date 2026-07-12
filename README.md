@@ -3,7 +3,7 @@
 ApprovalFlow is an invoice and expense approval platform.
 
 The system is designed to receive invoice or expense submissions, check them against company policy, and route each item to the right approval path:
-automatic approval, human review, or rejection. Approved items continue to the payment flow.
+automatic approval, human review, or rejection. Approved items will continue to the payment flow.
 The core rule is:
 
 > The agent can recommend, but code decides.
@@ -32,7 +32,7 @@ flowchart LR
 | `api-gateway` | External entry point for the UI |
 | `workflow-service` | Tracks invoice state and workflow progress |
 | `decision-service` | Applies policy checks, agent recommendation, and deterministic guardrails |
-| `payment-service` | Handles payment flow and compensation |
+| `payment-service`  | Will handle payment execution and compensation |
 | `ui` | Minimal React/Vite frontend |
 
 Detailed architecture: [ARCHITECTURE.md](ARCHITECTURE.md)
@@ -56,12 +56,23 @@ docker compose down
 
 ## API
 
-Public endpoints on api-gateway:
+Public endpoints are exposed through `api-gateway`:
 
-- `POST /invoices` — submit an invoice. Returns a `tracking_id` and status `received`.
-- `GET /invoices/{tracking_id}` — returns the invoice status, details, and the decision once routed, or 404.
+- `POST /invoices` — submits an invoice and returns a `tracking_id` with the initial status `received`.
+- `GET /invoices/{tracking_id}` — returns the invoice details, current status, decision, and review history. Returns 404 when the tracking ID does not exist.
+- `GET /approvals/queue` — returns invoices that are waiting for human review, ordered from oldest to newest.
+- `POST /approvals/{tracking_id}/actions` — approves, rejects, or requests more information for an invoice in `pending_review` (requesting more information requires a comment). Requests include an `idempotency_key` so retries do not create duplicate actions.
+- `POST /invoices/{tracking_id}/additional-info` — adds missing structured information to an invoice in `needs_more_info` and sends it for another evaluation.
 
-Invoices are stored by workflow-service: in PostgreSQL when running with docker compose, in memory otherwise. After submission the invoice is routed asynchronously over Dapr pub/sub (`invoice.received` / `invoice.decided`) to `approved`, `pending_review`, or `rejected`. Routing thresholds live in `data/policy-config.json` and are read from the mounted file, so they can change without rebuilding images. Human review actions, payments, and duplicate detection are not implemented yet.
+`workflow-service` stores invoice and review state in PostgreSQL when the system runs with Docker Compose. Tests and local runs without a database use the in-memory repository.
+
+After an invoice is stored, `workflow-service` publishes `invoice.received` through Dapr Pub/Sub. `decision-service` evaluates the invoice and publishes `invoice.decided`. The final status becomes `approved`, `pending_review`, or `rejected`.
+
+Routing thresholds are defined in `data/policy-config.json`. The file is mounted into the container, so policy values can be updated without rebuilding the service image.
+
+For manual review, an escalated invoice appears in the Approver Queue. The reviewer can approve it, reject it, or request more information. When more information is supplied, the same invoice is sent for another evaluation while keeping its original tracking ID.
+
+Payment execution, duplicate detection, authentication, and dashboard metrics are not implemented yet.
 
 ## Tests
 

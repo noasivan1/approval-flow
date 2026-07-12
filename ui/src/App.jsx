@@ -1,9 +1,9 @@
 import SubmitInvoiceForm from "./SubmitInvoiceForm.jsx";
 import StatusLookup from "./StatusLookup.jsx";
+import ApproverQueue from "./ApproverQueue.jsx";
 
 const placeholders = [
-  { title: "Approver Queue", note: "Escalated items will appear here for human review." },
-  { title: "Approve / Reject", note: "Approvers will be able to approve, reject, or send items back." },
+  { title: "Approve / Reject", note: "Handled inline in the Approver Queue above." },
   { title: "Dashboard", note: "Basic approval and escalation metrics will be shown here." },
 ];
 
@@ -24,6 +24,11 @@ export default function App() {
         <section className="card card--wide">
           <h2>Check Status</h2>
           <StatusLookup />
+        </section>
+
+        <section className="card card--wide">
+          <h2>Approver Queue</h2>
+          <ApproverQueue />
         </section>
 
         {placeholders.map((section) => (
