@@ -11,13 +11,18 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from . import events
 from .config import settings
 from .logging_config import configure_logging, correlation_id_var, set_correlation_id
-from .models import InvoiceSubmission
+from .models import AdditionalInfo, InvoiceSubmission, ReviewActionRequest
 from .repository import get_repository
 
 configure_logging(settings.log_level)
 logger = logging.getLogger(settings.service_name)
 
 _DECIDED_STATUSES = {"approved", "pending_review", "rejected"}
+_STATUS_BY_ACTION = {
+    "approve": "approved",
+    "reject": "rejected",
+    "request_more_info": "needs_more_info",
+}
 _SWEEP_GRACE_SECONDS = 10
 
 
@@ -27,11 +32,16 @@ def _utc_now() -> str:
 
 def _received_event(invoice: dict) -> dict:
     submission_fields = InvoiceSubmission.model_fields.keys()
+    revision = invoice.get("revision", 1)
     return {
-        # derived from tracking_id so a sweep re-publish is byte-identical
-        "event_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"approvalflow/received/{invoice['tracking_id']}")),
+        # derived from tracking_id + revision so a sweep re-publish is
+        # byte-identical while each re-evaluation round gets a new identity
+        "event_id": str(
+            uuid.uuid5(uuid.NAMESPACE_URL, f"approvalflow/received/{invoice['tracking_id']}/{revision}")
+        ),
         "tracking_id": invoice["tracking_id"],
         "correlation_id": invoice.get("correlation_id", "-"),
+        "revision": revision,
         "submitted_at": invoice["created_at"],
         "invoice": {field: invoice.get(field) for field in submission_fields},
     }
@@ -108,6 +118,7 @@ def submit_invoice(submission: InvoiceSubmission, background_tasks: BackgroundTa
     invoice = {
         "tracking_id": str(uuid.uuid4()),
         "status": "received",
+        "revision": 1,
         **submission.model_dump(),
         "correlation_id": correlation_id_var.get(),
         "created_at": now,
@@ -122,11 +133,74 @@ def submit_invoice(submission: InvoiceSubmission, background_tasks: BackgroundTa
 
 @app.get("/invoices/{tracking_id}")
 def get_invoice(tracking_id: str):
-    invoice = get_repository().get(tracking_id)
+    repository = get_repository()
+    invoice = repository.get(tracking_id)
     if invoice is None:
         raise HTTPException(status_code=404, detail="Invoice not found")
     invoice.pop("published_at", None)
+    invoice["review_actions"] = repository.list_review_actions(tracking_id)
     return invoice
+
+
+@app.get("/approvals/queue")
+def approvals_queue():
+    items = []
+    for invoice in get_repository().list_pending_review():
+        decision = invoice.get("decision") or {}
+        items.append({
+            "tracking_id": invoice["tracking_id"],
+            "vendor": invoice["vendor"],
+            "amount": invoice["amount"],
+            "currency": invoice["currency"],
+            "category": invoice["category"],
+            "recommendation": decision.get("recommendation"),
+            "confidence": decision.get("confidence"),
+            "rule_ids": decision.get("rule_ids", []),
+            "plain_language_reason": decision.get("plain_language_reason"),
+            "review_requested_at": invoice.get("review_requested_at"),
+            "revision": invoice.get("revision", 1),
+        })
+    return items
+
+
+@app.post("/approvals/{tracking_id}/actions")
+def review_action(tracking_id: str, request: ReviewActionRequest):
+    repository = get_repository()
+    record = {
+        "action_id": str(uuid.uuid4()),
+        "tracking_id": tracking_id,
+        "action": request.action,
+        "reviewer_email": request.reviewer_email,
+        "comment": request.comment,
+        "idempotency_key": request.idempotency_key,
+        "correlation_id": correlation_id_var.get(),
+        "created_at": _utc_now(),
+    }
+    outcome = repository.apply_review_action(record, _STATUS_BY_ACTION[request.action], _utc_now())
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if outcome == "conflict":
+        raise HTTPException(status_code=409, detail="Invoice is no longer awaiting review")
+    invoice = repository.get(tracking_id)
+    logger.info("review action %s on %s -> %s", request.action, tracking_id, invoice["status"])
+    return {
+        "tracking_id": tracking_id,
+        "status": invoice["status"],
+        "result": "applied" if outcome == "applied" else "replayed",
+    }
+
+
+@app.post("/invoices/{tracking_id}/additional-info")
+def additional_info(tracking_id: str, info: AdditionalInfo, background_tasks: BackgroundTasks):
+    fields = {key: value for key, value in info.model_dump().items() if value is not None}
+    outcome, invoice = get_repository().apply_additional_info(tracking_id, fields, _utc_now())
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if outcome == "conflict":
+        raise HTTPException(status_code=409, detail="Additional information is only accepted after it was requested")
+    background_tasks.add_task(_publish_received, invoice)
+    logger.info("additional info for %s, re-evaluating as revision %d", tracking_id, invoice["revision"])
+    return {"tracking_id": tracking_id, "status": "received", "revision": invoice["revision"]}
 
 
 @app.get("/dapr/subscribe")
@@ -166,7 +240,15 @@ def handle_invoice_decided(event: dict):
         if invoice["status"] != "received":
             return events.EVENT_SUCCESS  # already decided by another event
 
-        repository.update_decision(data["tracking_id"], data["status"], data, _utc_now())
+        event_revision = data.get("revision", 1)
+        if event_revision != invoice.get("revision", 1):
+            logger.info(
+                "ignoring stale decision for %s (event revision %s, current %s)",
+                data["tracking_id"], event_revision, invoice.get("revision", 1),
+            )
+            return events.EVENT_SUCCESS
+
+        repository.update_decision(data["tracking_id"], data["status"], data, _utc_now(), event_revision)
     except Exception:
         logger.exception("transient failure applying decision for %s", data["tracking_id"])
         return events.EVENT_RETRY

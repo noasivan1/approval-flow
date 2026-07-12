@@ -137,6 +137,24 @@ def test_malformed_payload_is_dropped(monkeypatch):
     assert missing_ids.json() == {"status": "DROP"}
 
 
+def test_revision_is_echoed_into_decided_event(monkeypatch):
+    published = []
+
+    async def fake_publish(topic, data):
+        published.append(data)
+
+    monkeypatch.setattr(events, "publish", fake_publish)
+
+    event = received_event()
+    event["data"]["revision"] = 3
+    client.post("/events/invoice-received", json=event)
+    assert published[0]["revision"] == 3
+
+    # events without a revision default to the first round
+    client.post("/events/invoice-received", json=received_event())
+    assert published[1]["revision"] == 1
+
+
 def test_subscription_lists_received_topic():
     response = client.get("/dapr/subscribe")
     subscriptions = response.json()

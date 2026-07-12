@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import workflow_client
 from .config import settings
 from .logging_config import configure_logging, set_correlation_id
-from .models import InvoiceSubmission
+from .models import AdditionalInfo, InvoiceSubmission, ReviewActionRequest
 
 configure_logging(settings.log_level)
 logger = logging.getLogger(settings.service_name)
@@ -57,3 +57,36 @@ async def get_invoice(tracking_id: str):
     if invoice is None:
         raise HTTPException(status_code=404, detail="Invoice not found")
     return invoice
+
+
+@app.get("/approvals/queue")
+async def approvals_queue():
+    try:
+        return await workflow_client.get_approvals_queue()
+    except httpx.HTTPError:
+        logger.exception("approvals queue fetch failed: workflow-service unreachable")
+        raise HTTPException(status_code=502, detail="workflow-service unavailable")
+
+
+@app.post("/approvals/{tracking_id}/actions")
+async def review_action(tracking_id: str, request: ReviewActionRequest):
+    try:
+        code, body = await workflow_client.submit_review_action(tracking_id, request.model_dump())
+    except httpx.HTTPError:
+        logger.exception("review action failed: workflow-service unreachable")
+        raise HTTPException(status_code=502, detail="workflow-service unavailable")
+    if code in (404, 409):
+        raise HTTPException(status_code=code, detail=body.get("detail", "Review action failed"))
+    return body
+
+
+@app.post("/invoices/{tracking_id}/additional-info")
+async def additional_info(tracking_id: str, info: AdditionalInfo):
+    try:
+        code, body = await workflow_client.submit_additional_info(tracking_id, info.model_dump())
+    except httpx.HTTPError:
+        logger.exception("additional info failed: workflow-service unreachable")
+        raise HTTPException(status_code=502, detail="workflow-service unavailable")
+    if code in (404, 409):
+        raise HTTPException(status_code=code, detail=body.get("detail", "Additional info rejected"))
+    return body

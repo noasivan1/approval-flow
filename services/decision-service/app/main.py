@@ -94,6 +94,7 @@ async def handle_invoice_received(event: dict):
             "event_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"approvalflow/decided/{event_id}")),
             "tracking_id": tracking_id,
             "correlation_id": data.get("correlation_id", "-"),
+            "revision": data.get("revision", 1),
             "recommendation": recommendation.suggestion,
             "confidence": recommendation.confidence,
             "evaluated_at": datetime.now(timezone.utc).isoformat(),

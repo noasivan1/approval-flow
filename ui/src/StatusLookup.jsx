@@ -1,10 +1,16 @@
 import { useState } from "react";
 import { getInvoice } from "./api.js";
+import AdditionalInfoForm from "./AdditionalInfoForm.jsx";
 
 // server timestamps are UTC; show them in the viewer's local time
 function formatDate(isoString) {
   const date = new Date(isoString);
   return isNaN(date) ? isoString : date.toLocaleString();
+}
+
+function lastInfoRequest(invoice) {
+  const requests = (invoice.review_actions || []).filter((a) => a.action === "request_more_info");
+  return requests.length ? requests[requests.length - 1] : null;
 }
 
 export default function StatusLookup() {
@@ -14,15 +20,14 @@ export default function StatusLookup() {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  async function handleLookup(event) {
-    event.preventDefault();
+  async function lookup(id) {
     setBusy(true);
     setError(null);
-    setInvoice(null);
     setNotFound(false);
     try {
-      const result = await getInvoice(trackingId.trim());
+      const result = await getInvoice(id);
       if (result === null) {
+        setInvoice(null);
         setNotFound(true);
       } else {
         setInvoice(result);
@@ -33,6 +38,14 @@ export default function StatusLookup() {
       setBusy(false);
     }
   }
+
+  async function handleLookup(event) {
+    event.preventDefault();
+    setInvoice(null);
+    await lookup(trackingId.trim());
+  }
+
+  const infoRequest = invoice ? lastInfoRequest(invoice) : null;
 
   return (
     <form className="form" onSubmit={handleLookup}>
@@ -82,7 +95,35 @@ export default function StatusLookup() {
               )}
             </div>
           )}
-          {!invoice.decision && <p>Decision pending.</p>}
+          {!invoice.decision && invoice.status === "received" && <p>Decision pending.</p>}
+
+          {invoice.review_actions?.length > 0 && (
+            <div className="decision">
+              <p>
+                <strong>Review history</strong>
+              </p>
+              {invoice.review_actions.map((action) => (
+                <p key={action.action_id}>
+                  {formatDate(action.created_at)} — {action.action} by {action.reviewer_email}
+                  {action.comment ? `: ${action.comment}` : ""}
+                </p>
+              ))}
+            </div>
+          )}
+
+          {invoice.status === "needs_more_info" && (
+            <div className="decision">
+              {infoRequest && (
+                <p>
+                  <strong>Information requested:</strong> {infoRequest.comment}
+                </p>
+              )}
+              <AdditionalInfoForm
+                trackingId={invoice.tracking_id}
+                onSubmitted={() => lookup(invoice.tracking_id)}
+              />
+            </div>
+          )}
         </div>
       )}
       {notFound && <p className="form__error">No invoice found for this tracking id.</p>}

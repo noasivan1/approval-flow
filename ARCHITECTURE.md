@@ -44,7 +44,7 @@ Redis is used through Dapr for pub/sub and transient state. Redis is not the sou
 
 ## Dapr sidecars
 
-Each backend service runs with a Dapr sidecar. The services use Dapr HTTP APIs for service invocation, pub/sub, state, and local secret store configuration.
+Each backend service runs with a Dapr sidecar. The services currently use Dapr HTTP APIs for service invocation and pub/sub. State and local secret store components are configured for later workflow and integration needs.
 
 In local development, Redis backs Dapr pub/sub and state.
 
@@ -69,18 +69,39 @@ flowchart LR
     end
 ```
 
-## Invoice flow
+## Invoice and review flow
 
-Implemented up to the decision. Submission and routing are decoupled through
-Dapr pub/sub with two topics: `invoice.received` and `invoice.decided`.
+The current implementation covers invoice submission, asynchronous decision routing, and durable human review. Dapr Pub/Sub uses two topics: `invoice.received` and `invoice.decided`.
 
 1. A submitter creates an invoice in the UI.
-2. The API Gateway validates the request and forwards it to workflow-service.
-3. workflow-service persists the invoice with status `received` and returns a `tracking_id`. The `invoice.received` event is published after the response; a background sweep re-publishes events that failed to go out.
-4. decision-service consumes the event, evaluates the invoice against the external policy config plus a recommendation (currently a deterministic local stub), and publishes `invoice.decided` with the route, rule ids, and reasons.
-5. workflow-service consumes the decision and updates the status to `approved`, `pending_review`, or `rejected`. Both consumers are idempotent, so re-delivered events cause no repeated changes.
-6. Items routed to `human_review` wait in the approver queue until a person approves or rejects them (not implemented yet).
-7. Approved invoices move on to the payment flow below (not implemented yet).
+2. `api-gateway` validates the request and forwards it to `workflow-service`.
+3. `workflow-service` stores the invoice with status `received` and returns a `tracking_id`.
+4. The `invoice.received` event is published in the background. A retry sweep republishes invoices whose event was not published successfully.
+5. `decision-service` evaluates the invoice using the external policy configuration and the recommendation provider (currently a local stub).
+6. `decision-service` publishes `invoice.decided` with the route, confidence, rule IDs, and explanation.
+7. `workflow-service` updates the invoice to `approved`, `pending_review`, or `rejected`. Both event consumers are idempotent, so a re-delivered event does not change the invoice twice.
+8. Invoices in `pending_review` remain in the Approver Queue until a reviewer approves, rejects, or requests more information.
+9. Approved invoices are ready for the payment flow, which is not implemented yet.
+
+## Human review
+
+Invoices with status `pending_review` appear in the Approver Queue. A reviewer can perform one of three actions:
+
+- `approve` changes the status to `approved`.
+- `reject` changes the status to `rejected`.
+- `request_more_info` changes the status to `needs_more_info` and stores the reviewer's request.
+
+In the current version, an approved or rejected invoice cannot be reviewed again.
+
+When additional information is submitted, the invoice returns to `received` and is evaluated again. It keeps the same `tracking_id` and `correlation_id`.
+
+The review state is stored in PostgreSQL. The invoice status, current decision, revision, and review request time are stored with the invoice, while human actions are stored in the `review_actions` table. Pending reviews and action history therefore remain available after a service restart.
+
+Review transitions use an atomic update that succeeds only while the invoice is in `pending_review`. This prevents a repeated or concurrent action from overwriting the first completed review. Each request also includes an idempotency key, so retrying the same action does not create another history record.
+
+Each evaluation round has an integer `revision`. The first evaluation uses revision 1, and the number increases when additional information is submitted. The revision is included in both `invoice.received` and `invoice.decided`.
+
+`workflow-service` applies a decision only when the event revision matches the current invoice revision. A late decision from an older round is acknowledged without updating the invoice.
 
 ## Invoice sequence
 
