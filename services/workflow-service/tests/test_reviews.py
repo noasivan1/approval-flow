@@ -15,6 +15,7 @@ VALID_INVOICE = {
     "category": "saas",
     "receipt_present": True,
     "submitter_email": "omar.farouk@northwind.example",
+    "department": "engineering-2026Q2",
     "vendor_known": True,
 }
 
@@ -103,7 +104,8 @@ def test_approve_moves_to_approved(monkeypatch):
     response = client.post(f"/approvals/{tracking_id}/actions", json=action_payload("approve"))
     assert response.status_code == 200
     assert response.json() == {"tracking_id": tracking_id, "status": "approved", "result": "applied"}
-    assert client.get(f"/invoices/{tracking_id}").json()["status"] == "approved"
+    # approval immediately continues into the payment flow
+    assert client.get(f"/invoices/{tracking_id}").json()["status"] == "payment_requested"
 
 
 def test_reject_moves_to_rejected(monkeypatch):
@@ -154,7 +156,8 @@ def test_idempotency_key_replay_creates_single_action(monkeypatch):
 
     assert first.json()["result"] == "applied"
     assert second.status_code == 200
-    assert second.json() == {"tracking_id": tracking_id, "status": "approved", "result": "replayed"}
+    # the replay reports the live status, which has moved on to payment
+    assert second.json() == {"tracking_id": tracking_id, "status": "payment_requested", "result": "replayed"}
     assert len(get_repository().list_review_actions(tracking_id)) == 1
 
 
@@ -164,7 +167,7 @@ def test_action_after_leaving_pending_review_conflicts(monkeypatch):
 
     late = client.post(f"/approvals/{tracking_id}/actions", json=action_payload("reject"))
     assert late.status_code == 409
-    assert client.get(f"/invoices/{tracking_id}").json()["status"] == "approved"
+    assert client.get(f"/invoices/{tracking_id}").json()["status"] == "payment_requested"
 
 
 def test_action_on_unknown_invoice_returns_404():

@@ -25,6 +25,10 @@ _EXTRA_COLUMNS = (
     "review_requested_at",
     "duplicate_key",
     "duplicate_of",
+    "payment",
+    "payment_flow_version",
+    "payment_requested_at",
+    "payment_published_at",
 )
 
 _BOOKKEEPING_KEYS = (
@@ -34,6 +38,10 @@ _BOOKKEEPING_KEYS = (
     "review_requested_at",
     "duplicate_key",
     "duplicate_of",
+    "payment",
+    "payment_flow_version",
+    "payment_requested_at",
+    "payment_published_at",
 )
 
 _SCHEMA = """
@@ -88,6 +96,10 @@ _MIGRATIONS = (
     "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS review_requested_at TEXT",
     "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS duplicate_key TEXT",
     "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS duplicate_of TEXT",
+    "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS payment JSONB",
+    "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS payment_flow_version INTEGER",
+    "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS payment_requested_at TEXT",
+    "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS payment_published_at TEXT",
     "CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices (status)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_duplicate_key"
     " ON invoices (duplicate_key) WHERE duplicate_key IS NOT NULL",
@@ -150,19 +162,11 @@ def _split(invoice: dict) -> tuple[dict, dict]:
 
 def _row_to_invoice(row) -> dict:
     base = dict(zip(_COLUMNS, row))
-    details, decision, published_at, revision, review_requested_at, duplicate_key, duplicate_of = row[
-        len(_COLUMNS):
-    ]
-    return {
-        **base,
-        **(details or {}),
-        "decision": decision,
-        "published_at": published_at,
-        "revision": revision or 1,
-        "review_requested_at": review_requested_at,
-        "duplicate_key": duplicate_key,
-        "duplicate_of": duplicate_of,
-    }
+    extras = dict(zip(_EXTRA_COLUMNS, row[len(_COLUMNS):]))
+    details = extras.pop("details") or {}
+    invoice = {**base, **details, **extras}
+    invoice["revision"] = invoice.get("revision") or 1
+    return invoice
 
 
 class InMemoryInvoiceRepository:
@@ -182,6 +186,10 @@ class InMemoryInvoiceRepository:
         record.setdefault("review_requested_at", None)
         record.setdefault("duplicate_key", None)
         record.setdefault("duplicate_of", None)
+        record.setdefault("payment", None)
+        record.setdefault("payment_flow_version", None)
+        record.setdefault("payment_requested_at", None)
+        record.setdefault("payment_published_at", None)
         self._invoices[invoice["tracking_id"]] = record
 
     def create_invoice(self, invoice: dict) -> tuple[str, dict]:
@@ -224,6 +232,8 @@ class InMemoryInvoiceRepository:
             invoice["updated_at"] = updated_at
             if status == "pending_review":
                 invoice["review_requested_at"] = updated_at
+            if status == "approved":
+                invoice["payment_flow_version"] = 1
             return True
 
     def mark_published(self, tracking_id: str, published_at: str) -> None:
@@ -262,6 +272,8 @@ class InMemoryInvoiceRepository:
                 return "conflict"
             invoice["status"] = new_status
             invoice["updated_at"] = updated_at
+            if new_status == "approved":
+                invoice["payment_flow_version"] = 1
             self._review_actions.append({**record, "revision": invoice.get("revision", 1)})
             return "applied"
 
@@ -297,6 +309,57 @@ class InMemoryInvoiceRepository:
             invoice["published_at"] = None
             invoice["updated_at"] = updated_at
             return "applied", dict(invoice)
+
+    def start_payment(self, tracking_id: str, requested_at: str) -> bool:
+        with self._lock:
+            invoice = self._invoices.get(tracking_id)
+            if (
+                invoice is None
+                or invoice["status"] != "approved"
+                or invoice.get("payment_flow_version") != 1
+            ):
+                return False
+            invoice["status"] = "payment_requested"
+            invoice["payment_requested_at"] = requested_at
+            invoice["payment_published_at"] = None
+            invoice["updated_at"] = requested_at
+            return True
+
+    def mark_payment_published(self, tracking_id: str, published_at: str) -> None:
+        with self._lock:
+            invoice = self._invoices.get(tracking_id)
+            if invoice is not None and invoice.get("payment_published_at") is None:
+                invoice["payment_published_at"] = published_at
+
+    def find_approved_for_payment(self, updated_before: str) -> list[dict]:
+        with self._lock:
+            return [
+                dict(invoice)
+                for invoice in self._invoices.values()
+                if invoice["status"] == "approved"
+                and invoice.get("payment_flow_version") == 1
+                and invoice["updated_at"] < updated_before
+            ]
+
+    def find_payment_unpublished(self, requested_before: str) -> list[dict]:
+        with self._lock:
+            return [
+                dict(invoice)
+                for invoice in self._invoices.values()
+                if invoice["status"] == "payment_requested"
+                and invoice.get("payment_published_at") is None
+                and (invoice.get("payment_requested_at") or "") < requested_before
+            ]
+
+    def apply_payment_result(self, tracking_id: str, status: str, summary: dict, updated_at: str) -> bool:
+        with self._lock:
+            invoice = self._invoices.get(tracking_id)
+            if invoice is None or invoice["status"] != "payment_requested":
+                return False
+            invoice["status"] = status
+            invoice["payment"] = dict(summary)
+            invoice["updated_at"] = updated_at
+            return True
 
 
 class PostgresInvoiceRepository:
@@ -383,13 +446,14 @@ class PostgresInvoiceRepository:
         self._ensure_table()
         query = (
             "UPDATE invoices SET status = %s, decision = %s, updated_at = %s, "
-            "review_requested_at = CASE WHEN %s = 'pending_review' THEN %s ELSE review_requested_at END "
+            "review_requested_at = CASE WHEN %s = 'pending_review' THEN %s ELSE review_requested_at END, "
+            "payment_flow_version = CASE WHEN %s = 'approved' THEN 1 ELSE payment_flow_version END "
             "WHERE tracking_id = %s AND status = 'received' AND COALESCE(revision, 1) = %s"
         )
         with self._connect() as conn:
             cursor = conn.execute(
                 query,
-                (status, json.dumps(decision), updated_at, status, updated_at, tracking_id, revision),
+                (status, json.dumps(decision), updated_at, status, updated_at, status, tracking_id, revision),
             )
             return cursor.rowcount > 0
 
@@ -435,9 +499,10 @@ class PostgresInvoiceRepository:
             if row is None:
                 return "not_found"
             cursor = conn.execute(
-                "UPDATE invoices SET status = %s, updated_at = %s "
+                "UPDATE invoices SET status = %s, updated_at = %s, "
+                "payment_flow_version = CASE WHEN %s = 'approved' THEN 1 ELSE payment_flow_version END "
                 "WHERE tracking_id = %s AND status = 'pending_review'",
-                (new_status, updated_at, record["tracking_id"]),
+                (new_status, updated_at, new_status, record["tracking_id"]),
             )
             if cursor.rowcount == 0:
                 return "conflict"
@@ -518,6 +583,59 @@ class PostgresInvoiceRepository:
                 invoice["decision"] = decision
                 invoice["revision"] -= 1  # the rolled-back update had bumped it
                 return "duplicate", invoice
+
+    def start_payment(self, tracking_id: str, requested_at: str) -> bool:
+        self._ensure_table()
+        query = (
+            "UPDATE invoices SET status = 'payment_requested', payment_requested_at = %s, "
+            "payment_published_at = NULL, updated_at = %s "
+            "WHERE tracking_id = %s AND status = 'approved' AND payment_flow_version = 1"
+        )
+        with self._connect() as conn:
+            cursor = conn.execute(query, (requested_at, requested_at, tracking_id))
+            return cursor.rowcount > 0
+
+    def mark_payment_published(self, tracking_id: str, published_at: str) -> None:
+        self._ensure_table()
+        query = (
+            "UPDATE invoices SET payment_published_at = %s "
+            "WHERE tracking_id = %s AND payment_published_at IS NULL"
+        )
+        with self._connect() as conn:
+            conn.execute(query, (published_at, tracking_id))
+
+    def find_approved_for_payment(self, updated_before: str) -> list[dict]:
+        self._ensure_table()
+        # payment_flow_version is stamped on approval since the payment flow
+        # shipped; rows approved before it stay NULL and are never swept here
+        query = (
+            f"SELECT {_SELECT} FROM invoices "
+            "WHERE status = 'approved' AND payment_flow_version = 1 AND updated_at < %s"
+        )
+        with self._connect() as conn:
+            rows = conn.execute(query, (updated_before,)).fetchall()
+        return [_row_to_invoice(row) for row in rows]
+
+    def find_payment_unpublished(self, requested_before: str) -> list[dict]:
+        self._ensure_table()
+        query = (
+            f"SELECT {_SELECT} FROM invoices "
+            "WHERE status = 'payment_requested' AND payment_published_at IS NULL "
+            "AND payment_requested_at < %s"
+        )
+        with self._connect() as conn:
+            rows = conn.execute(query, (requested_before,)).fetchall()
+        return [_row_to_invoice(row) for row in rows]
+
+    def apply_payment_result(self, tracking_id: str, status: str, summary: dict, updated_at: str) -> bool:
+        self._ensure_table()
+        query = (
+            "UPDATE invoices SET status = %s, payment = %s, updated_at = %s "
+            "WHERE tracking_id = %s AND status = 'payment_requested'"
+        )
+        with self._connect() as conn:
+            cursor = conn.execute(query, (status, json.dumps(summary), updated_at, tracking_id))
+            return cursor.rowcount > 0
 
 
 _repository = None

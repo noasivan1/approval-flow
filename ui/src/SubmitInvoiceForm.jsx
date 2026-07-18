@@ -11,12 +11,20 @@ const initialForm = {
   vendor_known: true,
   attendees: "1",
   invoice_number: "",
+  department: "engineering-2026Q2",
   submitter_email: "dana.cohen@northwind.example",
   note: "",
 };
 
 const categories = ["meals", "travel", "saas", "hardware", "other"];
 const currencies = ["USD", "EUR", "GBP"];
+
+// must match the budget accounts in data/budgets.json
+const departments = [
+  { value: "engineering-2026Q2", label: "Engineering" },
+  { value: "marketing-2026Q2", label: "Marketing" },
+  { value: "sales-2026Q2", label: "Sales" },
+];
 
 export default function SubmitInvoiceForm() {
   const [form, setForm] = useState(initialForm);
@@ -82,6 +90,16 @@ export default function SubmitInvoiceForm() {
           {categories.map((category) => (
             <option key={category} value={category}>
               {category}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Department
+        <select value={form.department} onChange={(e) => update("department", e.target.value)} required>
+          {departments.map((department) => (
+            <option key={department.value} value={department.value}>
+              {department.label}
             </option>
           ))}
         </select>

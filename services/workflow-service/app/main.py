@@ -60,18 +60,74 @@ async def _publish_received(invoice: dict) -> bool:
     return True
 
 
+def _payment_amount_usd(invoice: dict):
+    decision = invoice.get("decision") or {}
+    if decision.get("amount_usd") is not None:
+        return decision["amount_usd"]
+    if (invoice.get("currency") or "USD").upper() == "USD":
+        return invoice["amount"]
+    return None  # payment-service fails this safely as missing_usd_amount
+
+
+def _payment_requested_event(invoice: dict) -> dict:
+    return {
+        "event_id": str(
+            uuid.uuid5(uuid.NAMESPACE_URL, f"approvalflow/payment-requested/{invoice['tracking_id']}")
+        ),
+        "tracking_id": invoice["tracking_id"],
+        "correlation_id": invoice.get("correlation_id", "-"),
+        "amount_usd": _payment_amount_usd(invoice),
+        "currency": invoice["currency"],
+        "amount": invoice["amount"],
+        "department": invoice.get("department"),
+        "vendor": invoice["vendor"],
+        "invoice_number": invoice.get("invoice_number"),
+        "requested_at": invoice.get("payment_requested_at"),
+    }
+
+
+async def _publish_payment_requested(invoice: dict) -> bool:
+    try:
+        await events.publish(events.TOPIC_PAYMENT_REQUESTED, _payment_requested_event(invoice))
+    except Exception:
+        logger.exception(
+            "publish of payment.requested failed for %s; retry sweep will pick it up",
+            invoice["tracking_id"],
+        )
+        return False
+    get_repository().mark_payment_published(invoice["tracking_id"], _utc_now())
+    return True
+
+
+def _start_payment(tracking_id: str, background_tasks: BackgroundTasks) -> None:
+    """Shared entry point for both approval paths; a no-op unless the invoice
+    is approved under the current payment flow."""
+    repository = get_repository()
+    if repository.start_payment(tracking_id, _utc_now()):
+        logger.info("payment requested for %s", tracking_id)
+        background_tasks.add_task(_publish_payment_requested, repository.get(tracking_id))
+
+
 async def republish_pending() -> int:
-    """Re-publish invoices whose invoice.received event never went out.
+    """Re-publish events that never went out and resume stuck payment starts.
 
     Best-effort recovery, not a transactional outbox: a crash between the DB
     write and the publish marker only delays the event until the next sweep.
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=_SWEEP_GRACE_SECONDS)).isoformat()
-    republished = 0
-    for invoice in get_repository().find_unpublished(cutoff):
+    repository = get_repository()
+    handled = 0
+    for invoice in repository.find_unpublished(cutoff):
         if await _publish_received(invoice):
-            republished += 1
-    return republished
+            handled += 1
+    for invoice in repository.find_approved_for_payment(cutoff):
+        if repository.start_payment(invoice["tracking_id"], _utc_now()):
+            if await _publish_payment_requested(repository.get(invoice["tracking_id"])):
+                handled += 1
+    for invoice in repository.find_payment_unpublished(cutoff):
+        if await _publish_payment_requested(invoice):
+            handled += 1
+    return handled
 
 
 async def _republish_loop() -> None:
@@ -113,7 +169,8 @@ async def health():
 
 
 def _public_view(invoice: dict) -> dict:
-    view = {key: value for key, value in invoice.items() if key not in ("duplicate_key", "published_at")}
+    hidden = ("duplicate_key", "published_at", "payment_published_at", "payment_flow_version")
+    view = {key: value for key, value in invoice.items() if key not in hidden}
     if not view.get("duplicate_of"):
         view.pop("duplicate_of", None)
     return view
@@ -177,7 +234,7 @@ def approvals_queue():
 
 
 @app.post("/approvals/{tracking_id}/actions")
-def review_action(tracking_id: str, request: ReviewActionRequest):
+def review_action(tracking_id: str, request: ReviewActionRequest, background_tasks: BackgroundTasks):
     repository = get_repository()
     record = {
         "action_id": str(uuid.uuid4()),
@@ -189,18 +246,19 @@ def review_action(tracking_id: str, request: ReviewActionRequest):
         "correlation_id": correlation_id_var.get(),
         "created_at": _utc_now(),
     }
-    outcome = repository.apply_review_action(record, _STATUS_BY_ACTION[request.action], _utc_now())
+    target_status = _STATUS_BY_ACTION[request.action]
+    outcome = repository.apply_review_action(record, target_status, _utc_now())
     if outcome == "not_found":
         raise HTTPException(status_code=404, detail="Invoice not found")
     if outcome == "conflict":
         raise HTTPException(status_code=409, detail="Invoice is no longer awaiting review")
+    if outcome == "applied":
+        logger.info("review action %s on %s -> %s", request.action, tracking_id, target_status)
+        if request.action == "approve":
+            _start_payment(tracking_id, background_tasks)
+        return {"tracking_id": tracking_id, "status": target_status, "result": "applied"}
     invoice = repository.get(tracking_id)
-    logger.info("review action %s on %s -> %s", request.action, tracking_id, invoice["status"])
-    return {
-        "tracking_id": tracking_id,
-        "status": invoice["status"],
-        "result": "applied" if outcome == "applied" else "replayed",
-    }
+    return {"tracking_id": tracking_id, "status": invoice["status"], "result": "replayed"}
 
 
 @app.post("/invoices/{tracking_id}/additional-info")
@@ -220,6 +278,50 @@ def additional_info(tracking_id: str, info: AdditionalInfo, background_tasks: Ba
     return {"tracking_id": tracking_id, "status": "received", "revision": invoice["revision"]}
 
 
+_PAYMENT_RESULT_STATUSES = {"paid", "payment_failed"}
+
+
+@app.post("/events/payment-result")
+def handle_payment_result(event: dict):
+    data = event.get("data") if isinstance(event, dict) else None
+    if (
+        not isinstance(data, dict)
+        or not data.get("tracking_id")
+        or not data.get("event_id")
+        or not data.get("payment_id")
+        or data.get("status") not in _PAYMENT_RESULT_STATUSES
+    ):
+        logger.error("dropping malformed payment.result event")
+        return events.EVENT_DROP
+
+    set_correlation_id(data.get("correlation_id", "-"))
+    repository = get_repository()
+    try:
+        invoice = repository.get(data["tracking_id"])
+        if invoice is None:
+            logger.error("dropping payment result for unknown invoice %s", data["tracking_id"])
+            return events.EVENT_DROP
+        if invoice["status"] != "payment_requested":
+            return events.EVENT_SUCCESS  # duplicate or late result; terminal states stay untouched
+
+        summary = {
+            "payment_id": data["payment_id"],
+            "status": data["status"],
+            "failure_reason": data.get("failure_reason"),
+            "reservation_released": bool(data.get("reservation_released")),
+            "requested_at": data.get("requested_at"),
+            "executed_at": data.get("executed_at"),
+            "released_at": data.get("released_at"),
+        }
+        repository.apply_payment_result(data["tracking_id"], data["status"], summary, _utc_now())
+    except Exception:
+        logger.exception("transient failure applying payment result for %s", data["tracking_id"])
+        return events.EVENT_RETRY
+
+    logger.info("invoice %s payment result: %s", data["tracking_id"], data["status"])
+    return events.EVENT_SUCCESS
+
+
 @app.get("/dapr/subscribe")
 def dapr_subscribe():
     return [
@@ -227,12 +329,17 @@ def dapr_subscribe():
             "pubsubname": events.PUBSUB_NAME,
             "topic": events.TOPIC_INVOICE_DECIDED,
             "route": "/events/invoice-decided",
-        }
+        },
+        {
+            "pubsubname": events.PUBSUB_NAME,
+            "topic": events.TOPIC_PAYMENT_RESULT,
+            "route": "/events/payment-result",
+        },
     ]
 
 
 @app.post("/events/invoice-decided")
-def handle_invoice_decided(event: dict):
+def handle_invoice_decided(event: dict, background_tasks: BackgroundTasks):
     data = event.get("data") if isinstance(event, dict) else None
     if (
         not isinstance(data, dict)
@@ -265,7 +372,11 @@ def handle_invoice_decided(event: dict):
             )
             return events.EVENT_SUCCESS
 
-        repository.update_decision(data["tracking_id"], data["status"], data, _utc_now(), event_revision)
+        applied = repository.update_decision(
+            data["tracking_id"], data["status"], data, _utc_now(), event_revision
+        )
+        if applied and data["status"] == "approved":
+            _start_payment(data["tracking_id"], background_tasks)
     except Exception:
         logger.exception("transient failure applying decision for %s", data["tracking_id"])
         return events.EVENT_RETRY

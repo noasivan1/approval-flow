@@ -17,6 +17,7 @@ INV_1001 = {
     "category": "meals",
     "receipt_present": True,
     "submitter_email": "dana.cohen@northwind.example",
+    "department": "engineering-2026Q2",
     "vendor_known": True,
     "attendees": 1,
     "invoice_number": "NW-INV-7781",

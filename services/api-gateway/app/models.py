@@ -20,7 +20,7 @@ class InvoiceSubmission(BaseModel):
     submitter_email: str = Field(min_length=3)
     note: str | None = None
     invoice_number: str | None = None
-    department: str | None = None
+    department: str = Field(min_length=1)
     vendor_known: bool | None = None
     attendees: int | None = Field(default=None, ge=1)
     line_items: list[LineItem] = []

@@ -1,0 +1,22 @@
+{
+  "accounts": [
+    {
+      "budget_id": "marketing-2026Q2-usd",
+      "department": "marketing-2026Q2",
+      "currency": "USD",
+      "total": 1000
+    },
+    {
+      "budget_id": "engineering-2026Q2-usd",
+      "department": "engineering-2026Q2",
+      "currency": "USD",
+      "total": 50000
+    },
+    {
+      "budget_id": "sales-2026Q2-usd",
+      "department": "sales-2026Q2",
+      "currency": "USD",
+      "total": 20000
+    }
+  ]
+}
