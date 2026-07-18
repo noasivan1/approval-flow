@@ -44,7 +44,10 @@ async def submit_invoice(submission: InvoiceSubmission):
     except httpx.HTTPError:
         logger.exception("invoice submission failed: workflow-service unreachable")
         raise HTTPException(status_code=502, detail="workflow-service unavailable")
-    return {"tracking_id": result["tracking_id"], "status": result["status"]}
+    response = {"tracking_id": result["tracking_id"], "status": result["status"]}
+    if result.get("duplicate_of"):
+        response["duplicate_of"] = result["duplicate_of"]
+    return response
 
 
 @app.get("/invoices/{tracking_id}")

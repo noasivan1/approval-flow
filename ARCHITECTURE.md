@@ -103,6 +103,16 @@ Each evaluation round has an integer `revision`. The first evaluation uses revis
 
 `workflow-service` applies a decision only when the event revision matches the current invoice revision. A late decision from an older round is acknowledged without updating the invoice.
 
+## Duplicate detection
+
+A submission is treated as a business duplicate when its vendor, invoice number, currency, and amount match an invoice that already exists. Before comparison, the vendor is trimmed and lowercased, the invoice number and currency are trimmed and uppercased, and the amount is normalized to two decimal places. Submissions without an invoice number are not checked, because vendor and amount alone cannot distinguish two legitimate expenses.
+
+`workflow-service` runs the check when the invoice is stored, before `invoice.received` is published.  A duplicate still gets its own record and tracking ID, with status `duplicate`, a `duplicate_of` link to the original, and a stored decision containing the `GLOBAL-DUP` rule . It is not sent to `decision-service` and does not enter the approver queue, so its decision has no recommendation or confidence fields.
+
+PostgreSQL enforces the duplicate key with a partial unique index. If two identical submissions arrive at the same time, one becomes the original and the other is stored as a duplicate linked to it. The same check runs when an invoice in `needs_more_info` later receives an invoice number: if that number already belongs to another invoice, the invoice is marked as a duplicate instead of being re-evaluated.
+
+Existing rows are not backfilled with duplicate keys, so detection covers invoices submitted after the feature was added.
+
 ## Invoice sequence
 
 ```mermaid

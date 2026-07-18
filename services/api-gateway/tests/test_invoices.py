@@ -68,6 +68,37 @@ def test_unknown_tracking_id_returns_404(monkeypatch):
     assert response.status_code == 404
 
 
+def test_duplicate_of_passes_through_on_submission(monkeypatch):
+    async def fake_submit(payload):
+        return {"tracking_id": "dup-456", "status": "duplicate", "duplicate_of": "orig-123"}
+
+    monkeypatch.setattr(workflow_client, "submit_invoice", fake_submit)
+
+    response = client.post("/invoices", json=VALID_INVOICE)
+    assert response.status_code == 202
+    assert response.json() == {
+        "tracking_id": "dup-456",
+        "status": "duplicate",
+        "duplicate_of": "orig-123",
+    }
+
+
+def test_duplicate_of_passes_through_on_lookup(monkeypatch):
+    async def fake_get(tracking_id):
+        return {
+            "tracking_id": tracking_id,
+            "status": "duplicate",
+            "duplicate_of": "orig-123",
+            "decision": {"route": "duplicate", "rule_ids": ["GLOBAL-DUP"]},
+        }
+
+    monkeypatch.setattr(workflow_client, "get_invoice", fake_get)
+
+    body = client.get("/invoices/dup-456").json()
+    assert body["duplicate_of"] == "orig-123"
+    assert body["decision"]["rule_ids"] == ["GLOBAL-DUP"]
+
+
 def test_optional_structured_fields_survive_forwarding(monkeypatch):
     forwarded = {}
 

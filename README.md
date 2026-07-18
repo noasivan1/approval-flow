@@ -68,11 +68,15 @@ Public endpoints are exposed through `api-gateway`:
 
 After an invoice is stored, `workflow-service` publishes `invoice.received` through Dapr Pub/Sub. `decision-service` evaluates the invoice and publishes `invoice.decided`. The final status becomes `approved`, `pending_review`, or `rejected`.
 
+Duplicate submissions are detected when the invoice is stored, before `invoice.received` is published. A submission with the same vendor, invoice number, currency, and amount as an existing invoice gets its own tracking ID with status `duplicate`, a `duplicate_of` link to the original, and a `GLOBAL-DUP` decision. Duplicates are not sent to `decision-service`, so they have no recommendation or confidence score.
+
+Submissions without an invoice number are accepted normally, and rows stored before this feature are not checked for duplicates.
+
 Routing thresholds are defined in `data/policy-config.json`. The file is mounted into the container, so policy values can be updated without rebuilding the service image.
 
 For manual review, an escalated invoice appears in the Approver Queue. The reviewer can approve it, reject it, or request more information. When more information is supplied, the same invoice is sent for another evaluation while keeping its original tracking ID.
 
-Payment execution, duplicate detection, authentication, and dashboard metrics are not implemented yet.
+Payment execution, authentication, and dashboard metrics are not implemented yet.
 
 ## Tests
 
