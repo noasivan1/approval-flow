@@ -44,6 +44,39 @@ async def get_approvals_queue() -> list:
     return response.json()
 
 
+async def get_dashboard() -> dict:
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        response = await client.get(
+            f"{settings.workflow_service_url}/dashboard",
+            headers=_headers(),
+        )
+    response.raise_for_status()
+    return response.json()
+
+
+async def get_trail(tracking_id: str) -> dict | None:
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        response = await client.get(
+            f"{settings.workflow_service_url}/invoices/{tracking_id}/trail",
+            headers=_headers(),
+        )
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    return response.json()
+
+
+async def get_notifications(submitter_email: str) -> list:
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        response = await client.get(
+            f"{settings.workflow_service_url}/notifications",
+            params={"submitter_email": submitter_email},
+            headers=_headers(),
+        )
+    response.raise_for_status()
+    return response.json()
+
+
 async def _forward_post(path: str, payload: dict) -> tuple[int, dict]:
     """POST to workflow-service, passing 404/409 outcomes through to the caller."""
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:

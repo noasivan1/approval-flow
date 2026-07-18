@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { getInvoice } from "./api.js";
+import { getInvoice, getTrail } from "./api.js";
 import AdditionalInfoForm from "./AdditionalInfoForm.jsx";
 
 // server timestamps are UTC; show them in the viewer's local time
@@ -16,9 +16,18 @@ function lastInfoRequest(invoice) {
 export default function StatusLookup() {
   const [trackingId, setTrackingId] = useState("");
   const [invoice, setInvoice] = useState(null);
+  const [trail, setTrail] = useState(null);
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+
+  async function showTrail(id) {
+    try {
+      setTrail(await getTrail(id));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
 
   async function lookup(id) {
     setBusy(true);
@@ -42,6 +51,7 @@ export default function StatusLookup() {
   async function handleLookup(event) {
     event.preventDefault();
     setInvoice(null);
+    setTrail(null);
     await lookup(trackingId.trim());
   }
 
@@ -148,6 +158,34 @@ export default function StatusLookup() {
                 trackingId={invoice.tracking_id}
                 onSubmitted={() => lookup(invoice.tracking_id)}
               />
+            </div>
+          )}
+
+          {!trail && (
+            <button type="button" onClick={() => showTrail(invoice.tracking_id)}>
+              Show audit trail
+            </button>
+          )}
+          {trail && (
+            <div className="decision">
+              <p>
+                <strong>Audit trail</strong>
+              </p>
+              <p>
+                Correlation: <code>{trail.correlation_id}</code> — revision {trail.revision}
+              </p>
+              <p>
+                Submitted {formatDate(trail.submitted_at)} by {trail.submission.submitter_email} (
+                {trail.submission.department})
+              </p>
+              {trail.duplicates.length > 0 && (
+                <p>Duplicate attempts: {trail.duplicates.length}</p>
+              )}
+              {trail.notifications.length > 0 && (
+                <p>
+                  Notifications: {trail.notifications.map((n) => n.status).join(", ")}
+                </p>
+              )}
             </div>
           )}
         </div>
