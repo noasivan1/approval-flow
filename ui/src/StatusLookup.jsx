@@ -72,6 +72,11 @@ export default function StatusLookup() {
             {invoice.vendor} — {invoice.amount} {invoice.currency} ({invoice.category})
           </p>
           <p>Submitted: {formatDate(invoice.created_at)}</p>
+          {invoice.duplicate_of && (
+            <p>
+              Duplicate of: <code>{invoice.duplicate_of}</code>
+            </p>
+          )}
           {invoice.decision && (
             <div className="decision">
               <p>

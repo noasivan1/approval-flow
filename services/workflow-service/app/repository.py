@@ -1,6 +1,7 @@
 import json
 import os
 import threading
+from decimal import ROUND_HALF_UP, Decimal
 
 _COLUMNS = (
     "tracking_id",
@@ -16,9 +17,24 @@ _COLUMNS = (
     "updated_at",
 )
 
-_EXTRA_COLUMNS = ("details", "decision", "published_at", "revision", "review_requested_at")
+_EXTRA_COLUMNS = (
+    "details",
+    "decision",
+    "published_at",
+    "revision",
+    "review_requested_at",
+    "duplicate_key",
+    "duplicate_of",
+)
 
-_BOOKKEEPING_KEYS = ("decision", "published_at", "revision", "review_requested_at")
+_BOOKKEEPING_KEYS = (
+    "decision",
+    "published_at",
+    "revision",
+    "review_requested_at",
+    "duplicate_key",
+    "duplicate_of",
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS invoices (
@@ -70,10 +86,56 @@ _MIGRATIONS = (
     "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS published_at TEXT",
     "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS revision INTEGER",
     "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS review_requested_at TEXT",
+    "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS duplicate_key TEXT",
+    "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS duplicate_of TEXT",
     "CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices (status)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_duplicate_key"
+    " ON invoices (duplicate_key) WHERE duplicate_key IS NOT NULL",
 )
 
 _SELECT = ", ".join(_COLUMNS + _EXTRA_COLUMNS)
+
+_INSERT_COLUMNS = _COLUMNS + ("details", "revision", "decision", "published_at", "duplicate_key", "duplicate_of")
+
+
+def duplicate_key_for(invoice: dict) -> str | None:
+    """Business duplicate identity: vendor + invoice_number + currency + amount.
+
+    Without an invoice number there is no reliable identity, so no key.
+    """
+    invoice_number = (invoice.get("invoice_number") or "").strip()
+    if not invoice_number:
+        return None
+    amount = Decimal(str(invoice["amount"])).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return "|".join(
+        [
+            invoice["vendor"].strip().lower(),
+            invoice_number.upper(),
+            (invoice.get("currency") or "USD").strip().upper(),
+            str(amount),
+        ]
+    )
+
+
+def _duplicate_decision(original_tracking_id: str, evaluated_at: str) -> dict:
+    # no recommendation/confidence: decision-service is never called for duplicates
+    return {
+        "route": "duplicate",
+        "status": "duplicate",
+        "rule_ids": ["GLOBAL-DUP"],
+        "reasons": [
+            {
+                "rule_id": "GLOBAL-DUP",
+                "code": "duplicate_invoice",
+                "detail": f"same vendor, invoice number, currency, and amount as invoice {original_tracking_id}",
+            }
+        ],
+        "plain_language_reason": (
+            "Rejected as a duplicate: an invoice with the same vendor, invoice number, "
+            "currency, and amount was already submitted."
+        ),
+        "evaluated_at": evaluated_at,
+    }
 
 
 def _split(invoice: dict) -> tuple[dict, dict]:
@@ -88,7 +150,9 @@ def _split(invoice: dict) -> tuple[dict, dict]:
 
 def _row_to_invoice(row) -> dict:
     base = dict(zip(_COLUMNS, row))
-    details, decision, published_at, revision, review_requested_at = row[len(_COLUMNS):]
+    details, decision, published_at, revision, review_requested_at, duplicate_key, duplicate_of = row[
+        len(_COLUMNS):
+    ]
     return {
         **base,
         **(details or {}),
@@ -96,6 +160,8 @@ def _row_to_invoice(row) -> dict:
         "published_at": published_at,
         "revision": revision or 1,
         "review_requested_at": review_requested_at,
+        "duplicate_key": duplicate_key,
+        "duplicate_of": duplicate_of,
     }
 
 
@@ -105,16 +171,37 @@ class InMemoryInvoiceRepository:
     def __init__(self) -> None:
         self._invoices: dict[str, dict] = {}
         self._review_actions: list[dict] = []
+        self._dup_index: dict[str, str] = {}
         self._lock = threading.Lock()
 
-    def save(self, invoice: dict) -> None:
+    def _store(self, invoice: dict) -> None:
+        record = dict(invoice)
+        record.setdefault("decision", None)
+        record.setdefault("published_at", None)
+        record.setdefault("revision", 1)
+        record.setdefault("review_requested_at", None)
+        record.setdefault("duplicate_key", None)
+        record.setdefault("duplicate_of", None)
+        self._invoices[invoice["tracking_id"]] = record
+
+    def create_invoice(self, invoice: dict) -> tuple[str, dict]:
         with self._lock:
             record = dict(invoice)
-            record.setdefault("decision", None)
-            record.setdefault("published_at", None)
-            record.setdefault("revision", 1)
-            record.setdefault("review_requested_at", None)
-            self._invoices[invoice["tracking_id"]] = record
+            key = duplicate_key_for(record)
+            original_id = self._dup_index.get(key) if key else None
+            if original_id is None:
+                record["duplicate_key"] = key
+                self._store(record)
+                if key:
+                    self._dup_index[key] = record["tracking_id"]
+                return "created", dict(self._invoices[record["tracking_id"]])
+            record["duplicate_key"] = None
+            record["duplicate_of"] = original_id
+            record["status"] = "duplicate"
+            record["decision"] = _duplicate_decision(original_id, record["created_at"])
+            record["published_at"] = record["created_at"]
+            self._store(record)
+            return "duplicate", dict(self._invoices[record["tracking_id"]])
 
     def get(self, tracking_id: str) -> dict | None:
         with self._lock:
@@ -150,7 +237,9 @@ class InMemoryInvoiceRepository:
             return [
                 dict(invoice)
                 for invoice in self._invoices.values()
-                if invoice.get("published_at") is None and invoice["created_at"] < created_before
+                if invoice.get("published_at") is None
+                and invoice["status"] == "received"
+                and invoice["created_at"] < created_before
             ]
 
     def list_pending_review(self) -> list[dict]:
@@ -189,6 +278,19 @@ class InMemoryInvoiceRepository:
             if invoice["status"] != "needs_more_info":
                 return "conflict", None
             invoice.update(fields)
+            if invoice.get("duplicate_key") is None:
+                new_key = duplicate_key_for(invoice)
+                if new_key:
+                    original_id = self._dup_index.get(new_key)
+                    if original_id and original_id != tracking_id:
+                        # the supplied invoice number reveals an existing original
+                        invoice["status"] = "duplicate"
+                        invoice["duplicate_of"] = original_id
+                        invoice["decision"] = _duplicate_decision(original_id, updated_at)
+                        invoice["updated_at"] = updated_at
+                        return "duplicate", dict(invoice)
+                    invoice["duplicate_key"] = new_key
+                    self._dup_index[new_key] = tracking_id
             invoice["revision"] = invoice.get("revision", 1) + 1
             invoice["status"] = "received"
             invoice["decision"] = None
@@ -201,8 +303,8 @@ class PostgresInvoiceRepository:
     """PostgreSQL store, used when DATABASE_URL is set.
 
     Opens a connection per operation and creates/migrates the tables on first
-    use. Status transitions are guarded in SQL so concurrent actions cannot
-    overwrite each other.
+    use. Status transitions are guarded in SQL, and the partial unique index on
+    duplicate_key is the arbiter for concurrent duplicate submissions.
     """
 
     def __init__(self, dsn: str) -> None:
@@ -227,17 +329,46 @@ class PostgresInvoiceRepository:
                     conn.execute(migration)
             self._table_ready = True
 
-    def save(self, invoice: dict) -> None:
-        self._ensure_table()
+    def _insert(self, conn, invoice: dict, skip_on_conflict: bool) -> bool:
         base, details = _split(invoice)
-        columns = ", ".join(_COLUMNS) + ", details, revision"
-        placeholders = ", ".join(f"%({column})s" for column in _COLUMNS) + ", %(details)s, %(revision)s"
+        params = {
+            **base,
+            "details": json.dumps(details),
+            "revision": invoice.get("revision", 1),
+            "decision": json.dumps(invoice["decision"]) if invoice.get("decision") else None,
+            "published_at": invoice.get("published_at"),
+            "duplicate_key": invoice.get("duplicate_key"),
+            "duplicate_of": invoice.get("duplicate_of"),
+        }
+        columns = ", ".join(_INSERT_COLUMNS)
+        placeholders = ", ".join(f"%({column})s" for column in _INSERT_COLUMNS)
         query = f"INSERT INTO invoices ({columns}) VALUES ({placeholders})"
+        if skip_on_conflict:
+            query += " ON CONFLICT (duplicate_key) WHERE duplicate_key IS NOT NULL DO NOTHING"
+        cursor = conn.execute(query, params)
+        return cursor.rowcount > 0
+
+    def create_invoice(self, invoice: dict) -> tuple[str, dict]:
+        self._ensure_table()
+        record = dict(invoice)
+        record["duplicate_key"] = duplicate_key_for(record)
+        record["duplicate_of"] = None
         with self._connect() as conn:
-            conn.execute(
-                query,
-                {**base, "details": json.dumps(details), "revision": invoice.get("revision", 1)},
-            )
+            if self._insert(conn, record, skip_on_conflict=True):
+                return "created", record
+            # the index rejected the insert, so an original with this key exists
+            row = conn.execute(
+                "SELECT tracking_id FROM invoices WHERE duplicate_key = %s",
+                (record["duplicate_key"],),
+            ).fetchone()
+            original_id = row[0]
+            record["duplicate_key"] = None
+            record["duplicate_of"] = original_id
+            record["status"] = "duplicate"
+            record["decision"] = _duplicate_decision(original_id, record["created_at"])
+            record["published_at"] = record["created_at"]
+            self._insert(conn, record, skip_on_conflict=False)
+            return "duplicate", record
 
     def get(self, tracking_id: str) -> dict | None:
         self._ensure_table()
@@ -270,7 +401,10 @@ class PostgresInvoiceRepository:
 
     def find_unpublished(self, created_before: str) -> list[dict]:
         self._ensure_table()
-        query = f"SELECT {_SELECT} FROM invoices WHERE published_at IS NULL AND created_at < %s"
+        query = (
+            f"SELECT {_SELECT} FROM invoices "
+            "WHERE published_at IS NULL AND status = 'received' AND created_at < %s"
+        )
         with self._connect() as conn:
             rows = conn.execute(query, (created_before,)).fetchall()
         return [_row_to_invoice(row) for row in rows]
@@ -324,6 +458,8 @@ class PostgresInvoiceRepository:
         return [dict(zip(_REVIEW_COLUMNS, row)) for row in rows]
 
     def apply_additional_info(self, tracking_id: str, fields: dict, updated_at: str):
+        import psycopg
+
         self._ensure_table()
         with self._connect() as conn:
             row = conn.execute(
@@ -336,26 +472,52 @@ class PostgresInvoiceRepository:
             if invoice["status"] != "needs_more_info":
                 return "conflict", None
             invoice.update(fields)
+            if invoice.get("duplicate_key") is None:
+                invoice["duplicate_key"] = duplicate_key_for(invoice)
             invoice["revision"] += 1
             invoice["status"] = "received"
             invoice["decision"] = None
             invoice["published_at"] = None
             invoice["updated_at"] = updated_at
             _, details = _split(invoice)
-            conn.execute(
-                "UPDATE invoices SET receipt_present = %s, note = %s, details = %s, revision = %s, "
-                "status = 'received', decision = NULL, published_at = NULL, updated_at = %s "
-                "WHERE tracking_id = %s",
-                (
-                    invoice["receipt_present"],
-                    invoice["note"],
-                    json.dumps(details),
-                    invoice["revision"],
-                    updated_at,
-                    tracking_id,
-                ),
-            )
-            return "applied", invoice
+            # savepoint so a duplicate-key violation does not abort the transaction
+            conn.execute("SAVEPOINT apply_info")
+            try:
+                conn.execute(
+                    "UPDATE invoices SET receipt_present = %s, note = %s, details = %s, revision = %s, "
+                    "status = 'received', decision = NULL, published_at = NULL, updated_at = %s, "
+                    "duplicate_key = %s WHERE tracking_id = %s",
+                    (
+                        invoice["receipt_present"],
+                        invoice["note"],
+                        json.dumps(details),
+                        invoice["revision"],
+                        updated_at,
+                        invoice["duplicate_key"],
+                        tracking_id,
+                    ),
+                )
+                conn.execute("RELEASE SAVEPOINT apply_info")
+                return "applied", invoice
+            except psycopg.errors.UniqueViolation:
+                conn.execute("ROLLBACK TO SAVEPOINT apply_info")
+                original = conn.execute(
+                    "SELECT tracking_id FROM invoices WHERE duplicate_key = %s",
+                    (invoice["duplicate_key"],),
+                ).fetchone()
+                original_id = original[0]
+                decision = _duplicate_decision(original_id, updated_at)
+                conn.execute(
+                    "UPDATE invoices SET status = 'duplicate', duplicate_of = %s, decision = %s, "
+                    "details = %s, updated_at = %s WHERE tracking_id = %s",
+                    (original_id, json.dumps(decision), json.dumps(details), updated_at, tracking_id),
+                )
+                invoice["status"] = "duplicate"
+                invoice["duplicate_of"] = original_id
+                invoice["duplicate_key"] = None
+                invoice["decision"] = decision
+                invoice["revision"] -= 1  # the rolled-back update had bumped it
+                return "duplicate", invoice
 
 
 _repository = None

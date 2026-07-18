@@ -112,6 +112,13 @@ async def health():
     return {"service": settings.service_name, "status": "ok"}
 
 
+def _public_view(invoice: dict) -> dict:
+    view = {key: value for key, value in invoice.items() if key not in ("duplicate_key", "published_at")}
+    if not view.get("duplicate_of"):
+        view.pop("duplicate_of", None)
+    return view
+
+
 @app.post("/invoices", status_code=201)
 def submit_invoice(submission: InvoiceSubmission, background_tasks: BackgroundTasks):
     now = _utc_now()
@@ -124,11 +131,18 @@ def submit_invoice(submission: InvoiceSubmission, background_tasks: BackgroundTa
         "created_at": now,
         "updated_at": now,
     }
-    get_repository().save(invoice)
+    outcome, record = get_repository().create_invoice(invoice)
+    if outcome == "duplicate":
+        # no event, no decision run, no review item for duplicates
+        logger.info(
+            "duplicate invoice: tracking_id=%s duplicate_of=%s",
+            record["tracking_id"], record["duplicate_of"],
+        )
+        return _public_view(record)
     # publish after the response so submission never waits on the sidecar
-    background_tasks.add_task(_publish_received, invoice)
-    logger.info("invoice received: tracking_id=%s vendor=%s", invoice["tracking_id"], invoice["vendor"])
-    return invoice
+    background_tasks.add_task(_publish_received, record)
+    logger.info("invoice received: tracking_id=%s vendor=%s", record["tracking_id"], record["vendor"])
+    return _public_view(record)
 
 
 @app.get("/invoices/{tracking_id}")
@@ -137,9 +151,8 @@ def get_invoice(tracking_id: str):
     invoice = repository.get(tracking_id)
     if invoice is None:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    invoice.pop("published_at", None)
     invoice["review_actions"] = repository.list_review_actions(tracking_id)
-    return invoice
+    return _public_view(invoice)
 
 
 @app.get("/approvals/queue")
@@ -198,6 +211,10 @@ def additional_info(tracking_id: str, info: AdditionalInfo, background_tasks: Ba
         raise HTTPException(status_code=404, detail="Invoice not found")
     if outcome == "conflict":
         raise HTTPException(status_code=409, detail="Additional information is only accepted after it was requested")
+    if outcome == "duplicate":
+        # the supplied invoice number matched an existing original: no re-evaluation
+        logger.info("invoice %s marked duplicate of %s", tracking_id, invoice["duplicate_of"])
+        return {"tracking_id": tracking_id, "status": "duplicate", "duplicate_of": invoice["duplicate_of"]}
     background_tasks.add_task(_publish_received, invoice)
     logger.info("additional info for %s, re-evaluating as revision %d", tracking_id, invoice["revision"])
     return {"tracking_id": tracking_id, "status": "received", "revision": invoice["revision"]}

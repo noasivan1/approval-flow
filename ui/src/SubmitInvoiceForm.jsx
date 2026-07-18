@@ -10,6 +10,7 @@ const initialForm = {
   receipt_present: true,
   vendor_known: true,
   attendees: "1",
+  invoice_number: "",
   submitter_email: "dana.cohen@northwind.example",
   note: "",
 };
@@ -37,6 +38,7 @@ export default function SubmitInvoiceForm() {
         ...form,
         amount: Number(form.amount),
         attendees: form.category === "meals" && form.attendees ? Number(form.attendees) : null,
+        invoice_number: form.invoice_number.trim() || null,
         note: form.note || null,
       });
       setResult(response);
@@ -114,6 +116,14 @@ export default function SubmitInvoiceForm() {
         Known vendor
       </label>
       <label>
+        Invoice number (optional)
+        <input
+          value={form.invoice_number}
+          onChange={(e) => update("invoice_number", e.target.value)}
+          placeholder="e.g. NW-INV-7781"
+        />
+      </label>
+      <label>
         Submitter email
         <input
           type="email"
@@ -131,7 +141,13 @@ export default function SubmitInvoiceForm() {
         {busy ? "Submitting..." : "Submit"}
       </button>
 
-      {result && (
+      {result && result.status === "duplicate" && (
+        <p className="form__error">
+          Detected as a duplicate submission. Tracking ID: <code>{result.tracking_id}</code> — original
+          invoice: <code>{result.duplicate_of}</code>
+        </p>
+      )}
+      {result && result.status !== "duplicate" && (
         <p className="form__result">
           Submitted. Tracking ID: <code>{result.tracking_id}</code> (status: {result.status})
         </p>
