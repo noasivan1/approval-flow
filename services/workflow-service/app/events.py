@@ -5,6 +5,8 @@ import httpx
 PUBSUB_NAME = "pubsub"
 TOPIC_INVOICE_RECEIVED = "invoice.received"
 TOPIC_INVOICE_DECIDED = "invoice.decided"
+TOPIC_PAYMENT_REQUESTED = "payment.requested"
+TOPIC_PAYMENT_RESULT = "payment.result"
 
 # Dapr pub/sub acknowledgements
 EVENT_SUCCESS = {"status": "SUCCESS"}

@@ -32,7 +32,7 @@ flowchart LR
 | `api-gateway` | External entry point for the UI |
 | `workflow-service` | Tracks invoice state and workflow progress |
 | `decision-service` | Applies policy checks, agent recommendation, and deterministic guardrails |
-| `payment-service`  | Will handle payment execution and compensation |
+| `payment-service`  | Budget reservation, simulated payment execution, and compensation |
 | `ui` | Minimal React/Vite frontend |
 
 Detailed architecture: [ARCHITECTURE.md](ARCHITECTURE.md)
@@ -66,7 +66,9 @@ Public endpoints are exposed through `api-gateway`:
 
 `workflow-service` stores invoice and review state in PostgreSQL when the system runs with Docker Compose. Tests and local runs without a database use the in-memory repository.
 
-After an invoice is stored, `workflow-service` publishes `invoice.received` through Dapr Pub/Sub. `decision-service` evaluates the invoice and publishes `invoice.decided`. The final status becomes `approved`, `pending_review`, or `rejected`.
+After an invoice is stored, `workflow-service` publishes `invoice.received` through Dapr Pub/Sub. `decision-service` evaluates the invoice and publishes `invoice.decided`. The invoice becomes `approved`, `pending_review`, or `rejected`.
+
+Approved invoices continue automatically into payment: `workflow-service` moves the invoice to `payment_requested` and publishes `payment.requested`. `payment-service` reserves the department budget, executes a deterministic simulated payment, and publishes `payment.result`, which sets the final status to `paid` or `payment_failed`. If execution fails after a reservation, the reservation is released exactly once and the failure reason is kept. One invoice can have at most one payment, enforced by a unique constraint in PostgreSQL, and both budgets and payments survive restarts. There is no real bank integration; locally, invoice number `RS-90021` is configured to fail so the compensation path can be demonstrated. Invoices approved before this feature existed are not picked up retroactively.
 
 Duplicate submissions are detected when the invoice is stored, before `invoice.received` is published. A submission with the same vendor, invoice number, currency, and amount as an existing invoice gets its own tracking ID with status `duplicate`, a `duplicate_of` link to the original, and a `GLOBAL-DUP` decision. Duplicates are not sent to `decision-service`, so they have no recommendation or confidence score.
 
@@ -76,7 +78,7 @@ Routing thresholds are defined in `data/policy-config.json`. The file is mounted
 
 For manual review, an escalated invoice appears in the Approver Queue. The reviewer can approve it, reject it, or request more information. When more information is supplied, the same invoice is sent for another evaluation while keeping its original tracking ID.
 
-Payment execution, authentication, and dashboard metrics are not implemented yet.
+Authentication, dashboard metrics, and real payment-provider integration are not implemented.
 
 ## Tests
 

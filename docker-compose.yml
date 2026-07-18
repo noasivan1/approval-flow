@@ -128,8 +128,15 @@ services:
     environment:
       SERVICE_NAME: payment-service
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-approvalflow}:${POSTGRES_PASSWORD:-approvalflow}@postgres:5432/${POSTGRES_DB:-approvalflow}
+      BUDGETS_PATH: /data/budgets.json
+      # deterministic local failure trigger for the INV-1012 journey
+      PAYMENT_FAIL_INVOICE_NUMBERS: RS-90021
+    volumes:
+      - ./data:/data:ro
     depends_on:
       - redis
+      - postgres
 
   payment-service-dapr:
     image: daprio/daprd:1.14.4

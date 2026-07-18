@@ -16,6 +16,7 @@ VALID_INVOICE = {
     "category": "meals",
     "receipt_present": True,
     "submitter_email": "dana.cohen@northwind.example",
+    "department": "engineering-2026Q2",
     "vendor_known": True,
     "attendees": 1,
 }
@@ -120,7 +121,8 @@ def test_decided_event_updates_status_and_stores_decision(monkeypatch):
     assert response.json() == {"status": "SUCCESS"}
 
     lookup = client.get(f"/invoices/{invoice['tracking_id']}").json()
-    assert lookup["status"] == "approved"
+    # approval immediately continues into the payment flow
+    assert lookup["status"] == "payment_requested"
     decision = lookup["decision"]
     assert decision["route"] == "auto_approve"
     assert decision["confidence"] == 0.95
@@ -150,7 +152,7 @@ def test_conflicting_second_decision_does_not_overwrite(monkeypatch):
     assert response.json() == {"status": "SUCCESS"}
 
     lookup = client.get(f"/invoices/{invoice['tracking_id']}").json()
-    assert lookup["status"] == "approved"
+    assert lookup["status"] == "payment_requested"  # first decision won, then moved to payment
 
 
 def test_transient_failure_returns_retry(monkeypatch):
@@ -188,5 +190,6 @@ def test_decision_for_unknown_invoice_is_dropped():
 def test_subscription_lists_decided_topic():
     response = client.get("/dapr/subscribe")
     assert response.json() == [
-        {"pubsubname": "pubsub", "topic": "invoice.decided", "route": "/events/invoice-decided"}
+        {"pubsubname": "pubsub", "topic": "invoice.decided", "route": "/events/invoice-decided"},
+        {"pubsubname": "pubsub", "topic": "payment.result", "route": "/events/payment-result"},
     ]

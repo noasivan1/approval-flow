@@ -20,7 +20,7 @@ It should not contain approval rules or payment logic.
 
 ### workflow-service
 
-The workflow service owns the approval process state. It tracks where each invoice is in the flow: received, waiting for decision, pending human review, approved, rejected, payment requested, paid, or payment failed.
+The workflow service owns the approval process state. It tracks the invoice throughout the workflow, including `received`, `pending_review`, `needs_more_info`, `approved`, `rejected`, `duplicate`, `payment_requested`, `paid`, and `payment_failed`.
 
 It coordinates the next step, but it should not contain the full decision policy.
 
@@ -38,7 +38,7 @@ It should not decide whether an invoice is allowed to be approved.
 
 ## Data ownership
 
-PostgreSQL stores durable business data such as invoices, decisions, payment records, and audit history. In the first implementation, workflow-service owns the invoice status and workflow state. Payment records and audit data can be added as the payment and verification flows are implemented.
+PostgreSQL stores durable invoice, decision, review, duplicate, payment, and budget data. `workflow-service` owns invoice status, workflow state, and review history. `payment-service` owns the `payments` and `budget_accounts` tables. A complete audit view will be added during the final verification work.
 
 Redis is used through Dapr for pub/sub and transient state. Redis is not the source of truth for business records.
 
@@ -81,7 +81,7 @@ The current implementation covers invoice submission, asynchronous decision rout
 6. `decision-service` publishes `invoice.decided` with the route, confidence, rule IDs, and explanation.
 7. `workflow-service` updates the invoice to `approved`, `pending_review`, or `rejected`. Both event consumers are idempotent, so a re-delivered event does not change the invoice twice.
 8. Invoices in `pending_review` remain in the Approver Queue until a reviewer approves, rejects, or requests more information.
-9. Approved invoices are ready for the payment flow, which is not implemented yet.
+9. Approved invoices continue automatically into the payment flow below, ending in `paid` or `payment_failed`.
 
 ## Human review
 
@@ -107,7 +107,7 @@ Each evaluation round has an integer `revision`. The first evaluation uses revis
 
 A submission is treated as a business duplicate when its vendor, invoice number, currency, and amount match an invoice that already exists. Before comparison, the vendor is trimmed and lowercased, the invoice number and currency are trimmed and uppercased, and the amount is normalized to two decimal places. Submissions without an invoice number are not checked, because vendor and amount alone cannot distinguish two legitimate expenses.
 
-`workflow-service` runs the check when the invoice is stored, before `invoice.received` is published.  A duplicate still gets its own record and tracking ID, with status `duplicate`, a `duplicate_of` link to the original, and a stored decision containing the `GLOBAL-DUP` rule . It is not sent to `decision-service` and does not enter the approver queue, so its decision has no recommendation or confidence fields.
+`workflow-service` runs the check when the invoice is stored, before `invoice.received` is published. A duplicate still gets its own record and tracking ID, with status `duplicate`, a `duplicate_of` link to the original, and a stored decision containing the `GLOBAL-DUP` rule. It is not sent to `decision-service` and does not enter the approver queue, so its decision has no recommendation or confidence fields.
 
 PostgreSQL enforces the duplicate key with a partial unique index. If two identical submissions arrive at the same time, one becomes the original and the other is stored as a duplicate linked to it. The same check runs when an invoice in `needs_more_info` later receives an invoice number: if that number already belongs to another invoice, the invoice is marked as a duplicate instead of being re-evaluated.
 
@@ -142,9 +142,9 @@ sequenceDiagram
     end
 ```
 
-## Planned payment flow and compensation
+## Payment flow and compensation
 
-Payment runs as a short sequence of steps, and each failing step has a compensation path so the system never ends in a half-paid state:
+Payment starts automatically when an invoice becomes `approved`, through either the automatic route or a human approve action. `workflow-service` moves the invoice to `payment_requested` with a guarded update and publishes `payment.requested`; `payment-service` runs the money steps and publishes `payment.result`, which sets the final invoice status to `paid` or `payment_failed`.
 
 ```mermaid
 flowchart TD
@@ -154,16 +154,24 @@ flowchart TD
     C -->|payment ok| D[Mark paid]
     C -->|payment failed| E[Release reservation]
     E --> F
-    D --> G[Write audit record]
+    D --> G[Publish payment.result]
     F --> G
 ```
 
 Rules for this flow:
 
-- If the budget reservation fails, the invoice is marked `payment_failed` and an audit record is written. Nothing needs to be rolled back because nothing was charged.
-- If payment execution fails after a reservation was made, the reservation is released (the compensation step), the invoice is marked `payment_failed`, and an audit record is written.
-- Every terminal outcome (`paid` or `payment_failed`) writes an audit record.
-- Payment steps must be idempotent so a retry cannot charge twice.
+- If budget reservation fails because the budget is insufficient, the department is missing, or no matching budget account exists, the payment is marked as failed. No compensation is needed because no budget was reserved.
+- If execution fails after a reservation, `payment-service` marks the payment as failed and releases the reservation in the same transaction. A repeated call does not release it again.
+- The `payments` table has a unique constraint on `tracking_id`, so one invoice can have at most one payment record.
+- Payment and budget updates use guarded database transitions. Replayed events and retries therefore return the stored outcome without moving money again.
+
+`payment-service` owns the `payments` and `budget_accounts` tables in PostgreSQL. Budgets are stored per department in USD and are seeded from `data/budgets.json`. The total, reserved, and spent values use PostgreSQL `NUMERIC`.
+
+Budget reservation uses one conditional update that succeeds only when enough budget remains. This prevents concurrent approvals from spending more than the account balance.
+
+The local payment provider is deterministic. Invoice numbers listed in `PAYMENT_FAIL_INVOICE_NUMBERS` are declined, while other valid payments succeed. The local configuration includes `RS-90021` for the payment-failure scenario. No real bank integration is used.
+
+A recovery sweep resumes payments left in `reserved` after a crash and republishes terminal results whose successful publication was not recorded. Existing approved invoices have no `payment_flow_version` and are excluded from the approved-invoice recovery sweep.
 
 ## Decision boundary
 

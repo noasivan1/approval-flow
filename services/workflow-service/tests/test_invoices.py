@@ -11,6 +11,7 @@ VALID_INVOICE = {
     "category": "meals",
     "receipt_present": True,
     "submitter_email": "dana.cohen@northwind.example",
+    "department": "engineering-2026Q2",
     "note": "Solo working lunch.",
 }
 
@@ -50,6 +51,12 @@ def test_negative_amount_is_rejected():
 
 def test_missing_vendor_is_rejected():
     payload = {key: value for key, value in VALID_INVOICE.items() if key != "vendor"}
+    response = client.post("/invoices", json=payload)
+    assert response.status_code == 422
+
+
+def test_missing_department_is_rejected():
+    payload = {key: value for key, value in VALID_INVOICE.items() if key != "department"}
     response = client.post("/invoices", json=payload)
     assert response.status_code == 422
 

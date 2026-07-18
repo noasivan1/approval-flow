@@ -101,6 +101,27 @@ export default function StatusLookup() {
             </div>
           )}
           {!invoice.decision && invoice.status === "received" && <p>Decision pending.</p>}
+          {invoice.status === "payment_requested" && <p>Payment processing…</p>}
+
+          {invoice.payment && (
+            <div className="decision">
+              <p>
+                <strong>Payment</strong>
+              </p>
+              {invoice.payment.status === "paid" && (
+                <p>
+                  Paid — payment <code>{invoice.payment.payment_id}</code>
+                  {invoice.payment.executed_at && ` at ${formatDate(invoice.payment.executed_at)}`}
+                </p>
+              )}
+              {invoice.payment.status === "payment_failed" && (
+                <>
+                  <p>Payment failed: {invoice.payment.failure_reason}</p>
+                  {invoice.payment.reservation_released && <p>Budget reservation was released.</p>}
+                </>
+              )}
+            </div>
+          )}
 
           {invoice.review_actions?.length > 0 && (
             <div className="decision">
