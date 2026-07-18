@@ -155,6 +155,23 @@ def test_configured_invoice_number_declines_and_releases_once(monkeypatch):
     assert budget()["reserved"] == before["reserved"]
 
 
+def test_failure_number_matches_verification_suffix(monkeypatch):
+    published = patch_publisher(monkeypatch)
+    before = budget()
+    event = payment_event(invoice_number="RS-90021-ABC123", amount_usd=9500.0)
+
+    client.post("/events/payment-requested", json=event)
+    payment = get_repository().get_payment(event["data"]["tracking_id"])
+    assert payment["status"] == "failed"
+    assert payment["failure_reason"] == "provider_declined"
+    assert budget()["reserved"] == before["reserved"]
+
+    # unrelated numbers still succeed
+    ok_event = payment_event(invoice_number="RS-99999")
+    client.post("/events/payment-requested", json=ok_event)
+    assert get_repository().get_payment(ok_event["data"]["tracking_id"])["status"] == "paid"
+
+
 def test_redelivery_while_reserved_resumes_without_second_reservation(monkeypatch):
     patch_publisher(monkeypatch)
     before = budget()

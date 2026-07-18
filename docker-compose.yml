@@ -28,6 +28,8 @@ services:
       # Reaches workflow-service through the gateway's own Dapr sidecar.
       WORKFLOW_SERVICE_URL: http://localhost:3500/v1.0/invoke/workflow-service/method
       ALLOWED_ORIGINS: http://localhost:5173
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
+      RATE_LIMIT_BACKEND: dapr
     ports:
       - "8000:8000"
     depends_on:

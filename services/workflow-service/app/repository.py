@@ -3,6 +3,8 @@ import os
 import threading
 from decimal import ROUND_HALF_UP, Decimal
 
+NOTIFY_STATUSES = ("needs_more_info", "rejected", "duplicate", "paid", "payment_failed")
+
 _COLUMNS = (
     "tracking_id",
     "vendor",
@@ -87,6 +89,27 @@ _REVIEW_COLUMNS = (
     "created_at",
 )
 
+_NOTIFICATIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS notifications (
+    notification_id TEXT PRIMARY KEY,
+    tracking_id TEXT NOT NULL,
+    submitter_email TEXT NOT NULL,
+    status TEXT NOT NULL,
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (tracking_id, status)
+)
+"""
+
+_NOTIFICATION_COLUMNS = (
+    "notification_id",
+    "tracking_id",
+    "submitter_email",
+    "status",
+    "message",
+    "created_at",
+)
+
 # additive, safe to run against a table created before these columns existed
 _MIGRATIONS = (
     "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS details JSONB",
@@ -103,6 +126,7 @@ _MIGRATIONS = (
     "CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices (status)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_duplicate_key"
     " ON invoices (duplicate_key) WHERE duplicate_key IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_notifications_email ON notifications (submitter_email)",
 )
 
 _SELECT = ", ".join(_COLUMNS + _EXTRA_COLUMNS)
@@ -176,6 +200,7 @@ class InMemoryInvoiceRepository:
         self._invoices: dict[str, dict] = {}
         self._review_actions: list[dict] = []
         self._dup_index: dict[str, str] = {}
+        self._notifications: list[dict] = []
         self._lock = threading.Lock()
 
     def _store(self, invoice: dict) -> None:
@@ -361,6 +386,77 @@ class InMemoryInvoiceRepository:
             invoice["updated_at"] = updated_at
             return True
 
+    def add_notification(self, record: dict) -> bool:
+        with self._lock:
+            for existing in self._notifications:
+                if (
+                    existing["tracking_id"] == record["tracking_id"]
+                    and existing["status"] == record["status"]
+                ):
+                    return False
+            self._notifications.append(dict(record))
+            return True
+
+    def list_notifications(self, submitter_email: str) -> list[dict]:
+        with self._lock:
+            matching = [dict(n) for n in self._notifications if n["submitter_email"] == submitter_email]
+            return sorted(matching, key=lambda n: n["created_at"], reverse=True)
+
+    def notifications_for(self, tracking_id: str) -> list[dict]:
+        with self._lock:
+            matching = [dict(n) for n in self._notifications if n["tracking_id"] == tracking_id]
+            return sorted(matching, key=lambda n: n["created_at"])
+
+    def find_missing_notifications(self) -> list[dict]:
+        with self._lock:
+            notified = {(n["tracking_id"], n["status"]) for n in self._notifications}
+            return [
+                dict(invoice)
+                for invoice in self._invoices.values()
+                if invoice["status"] in NOTIFY_STATUSES
+                and (invoice["tracking_id"], invoice["status"]) not in notified
+            ]
+
+    def list_duplicates_of(self, tracking_id: str) -> list[str]:
+        with self._lock:
+            return [
+                invoice["tracking_id"]
+                for invoice in self._invoices.values()
+                if invoice.get("duplicate_of") == tracking_id
+            ]
+
+    def dashboard_summary(self) -> dict:
+        with self._lock:
+            status_counts: dict[str, int] = {}
+            auto_count, human_count, escalated = 0, 0, 0
+            auto_amount = Decimal("0")
+            human_amount = Decimal("0")
+            approved_ids = {a["tracking_id"] for a in self._review_actions if a["action"] == "approve"}
+            for invoice in self._invoices.values():
+                status_counts[invoice["status"]] = status_counts.get(invoice["status"], 0) + 1
+                decision = invoice.get("decision") or {}
+                amount = Decimal(str(decision.get("amount_usd") or 0))
+                if decision.get("route") == "auto_approve":
+                    auto_count += 1
+                    auto_amount += amount
+                if invoice["tracking_id"] in approved_ids:
+                    human_count += 1
+                    human_amount += amount
+                if decision.get("route") == "human_review":
+                    escalated += 1
+            return {
+                "total_invoices": len(self._invoices),
+                "status_counts": status_counts,
+                "auto_approved_count": auto_count,
+                "human_approved_count": human_count,
+                "escalated_count": escalated,
+                "duplicate_count": status_counts.get("duplicate", 0),
+                "paid_count": status_counts.get("paid", 0),
+                "payment_failed_count": status_counts.get("payment_failed", 0),
+                "auto_approved_amount_usd": float(auto_amount),
+                "human_approved_amount_usd": float(human_amount),
+            }
+
 
 class PostgresInvoiceRepository:
     """PostgreSQL store, used when DATABASE_URL is set.
@@ -388,6 +484,7 @@ class PostgresInvoiceRepository:
             with self._connect() as conn:
                 conn.execute(_SCHEMA)
                 conn.execute(_REVIEW_SCHEMA)
+                conn.execute(_NOTIFICATIONS_SCHEMA)
                 for migration in _MIGRATIONS:
                     conn.execute(migration)
             self._table_ready = True
@@ -636,6 +733,89 @@ class PostgresInvoiceRepository:
         with self._connect() as conn:
             cursor = conn.execute(query, (status, json.dumps(summary), updated_at, tracking_id))
             return cursor.rowcount > 0
+
+    def add_notification(self, record: dict) -> bool:
+        self._ensure_table()
+        columns = ", ".join(_NOTIFICATION_COLUMNS)
+        placeholders = ", ".join(f"%({column})s" for column in _NOTIFICATION_COLUMNS)
+        query = (
+            f"INSERT INTO notifications ({columns}) VALUES ({placeholders}) "
+            "ON CONFLICT (tracking_id, status) DO NOTHING"
+        )
+        with self._connect() as conn:
+            cursor = conn.execute(query, record)
+            return cursor.rowcount > 0
+
+    def list_notifications(self, submitter_email: str) -> list[dict]:
+        self._ensure_table()
+        columns = ", ".join(_NOTIFICATION_COLUMNS)
+        query = (
+            f"SELECT {columns} FROM notifications WHERE submitter_email = %s "
+            "ORDER BY created_at DESC"
+        )
+        with self._connect() as conn:
+            rows = conn.execute(query, (submitter_email,)).fetchall()
+        return [dict(zip(_NOTIFICATION_COLUMNS, row)) for row in rows]
+
+    def notifications_for(self, tracking_id: str) -> list[dict]:
+        self._ensure_table()
+        columns = ", ".join(_NOTIFICATION_COLUMNS)
+        query = f"SELECT {columns} FROM notifications WHERE tracking_id = %s ORDER BY created_at"
+        with self._connect() as conn:
+            rows = conn.execute(query, (tracking_id,)).fetchall()
+        return [dict(zip(_NOTIFICATION_COLUMNS, row)) for row in rows]
+
+    def find_missing_notifications(self) -> list[dict]:
+        self._ensure_table()
+        placeholders = ", ".join(["%s"] * len(NOTIFY_STATUSES))
+        query = (
+            f"SELECT {_SELECT} FROM invoices i WHERE i.status IN ({placeholders}) "
+            "AND NOT EXISTS (SELECT 1 FROM notifications n "
+            "WHERE n.tracking_id = i.tracking_id AND n.status = i.status)"
+        )
+        with self._connect() as conn:
+            rows = conn.execute(query, NOTIFY_STATUSES).fetchall()
+        return [_row_to_invoice(row) for row in rows]
+
+    def list_duplicates_of(self, tracking_id: str) -> list[str]:
+        self._ensure_table()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT tracking_id FROM invoices WHERE duplicate_of = %s", (tracking_id,)
+            ).fetchall()
+        return [row[0] for row in rows]
+
+    def dashboard_summary(self) -> dict:
+        self._ensure_table()
+        with self._connect() as conn:
+            status_rows = conn.execute(
+                "SELECT status, count(*) FROM invoices GROUP BY status"
+            ).fetchall()
+            auto = conn.execute(
+                "SELECT count(*), COALESCE(SUM((decision->>'amount_usd')::numeric), 0) "
+                "FROM invoices WHERE decision->>'route' = 'auto_approve'"
+            ).fetchone()
+            human = conn.execute(
+                "SELECT count(*), COALESCE(SUM((i.decision->>'amount_usd')::numeric), 0) "
+                "FROM invoices i WHERE EXISTS (SELECT 1 FROM review_actions a "
+                "WHERE a.tracking_id = i.tracking_id AND a.action = 'approve')"
+            ).fetchone()
+            escalated = conn.execute(
+                "SELECT count(*) FROM invoices WHERE decision->>'route' = 'human_review'"
+            ).fetchone()
+        status_counts = {row[0]: row[1] for row in status_rows}
+        return {
+            "total_invoices": sum(status_counts.values()),
+            "status_counts": status_counts,
+            "auto_approved_count": auto[0],
+            "human_approved_count": human[0],
+            "escalated_count": escalated[0],
+            "duplicate_count": status_counts.get("duplicate", 0),
+            "paid_count": status_counts.get("paid", 0),
+            "payment_failed_count": status_counts.get("payment_failed", 0),
+            "auto_approved_amount_usd": float(auto[1]),
+            "human_approved_amount_usd": float(human[1]),
+        }
 
 
 _repository = None

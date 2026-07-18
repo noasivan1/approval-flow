@@ -12,7 +12,7 @@ from . import events
 from .config import settings
 from .logging_config import configure_logging, correlation_id_var, set_correlation_id
 from .models import AdditionalInfo, InvoiceSubmission, ReviewActionRequest
-from .repository import get_repository
+from .repository import NOTIFY_STATUSES, get_repository
 
 configure_logging(settings.log_level)
 logger = logging.getLogger(settings.service_name)
@@ -28,6 +28,35 @@ _SWEEP_GRACE_SECONDS = 10
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_NOTIFY_MESSAGES = {
+    "needs_more_info": "More information was requested for your invoice from {vendor}.",
+    "rejected": "Your invoice from {vendor} was rejected.",
+    "duplicate": "Your invoice from {vendor} was detected as a duplicate submission.",
+    "paid": "Your invoice from {vendor} was paid.",
+    "payment_failed": "Payment for your invoice from {vendor} failed.",
+}
+
+
+def _notify(invoice: dict | None) -> None:
+    """Create the outcome notification; never blocks or fails the transition."""
+    if not invoice or invoice.get("status") not in NOTIFY_STATUSES:
+        return
+    status = invoice["status"]
+    try:
+        get_repository().add_notification({
+            "notification_id": str(
+                uuid.uuid5(uuid.NAMESPACE_URL, f"approvalflow/notification/{invoice['tracking_id']}/{status}")
+            ),
+            "tracking_id": invoice["tracking_id"],
+            "submitter_email": invoice.get("submitter_email") or "-",
+            "status": status,
+            "message": _NOTIFY_MESSAGES[status].format(vendor=invoice.get("vendor", "")),
+            "created_at": _utc_now(),
+        })
+    except Exception:
+        logger.exception("notification write failed for %s", invoice["tracking_id"])
 
 
 def _received_event(invoice: dict) -> dict:
@@ -127,6 +156,9 @@ async def republish_pending() -> int:
     for invoice in repository.find_payment_unpublished(cutoff):
         if await _publish_payment_requested(invoice):
             handled += 1
+    for invoice in repository.find_missing_notifications():
+        _notify(invoice)
+        handled += 1
     return handled
 
 
@@ -195,6 +227,7 @@ def submit_invoice(submission: InvoiceSubmission, background_tasks: BackgroundTa
             "duplicate invoice: tracking_id=%s duplicate_of=%s",
             record["tracking_id"], record["duplicate_of"],
         )
+        _notify(record)
         return _public_view(record)
     # publish after the response so submission never waits on the sidecar
     background_tasks.add_task(_publish_received, record)
@@ -210,6 +243,40 @@ def get_invoice(tracking_id: str):
         raise HTTPException(status_code=404, detail="Invoice not found")
     invoice["review_actions"] = repository.list_review_actions(tracking_id)
     return _public_view(invoice)
+
+
+@app.get("/dashboard")
+def dashboard():
+    return get_repository().dashboard_summary()
+
+
+@app.get("/invoices/{tracking_id}/trail")
+def invoice_trail(tracking_id: str):
+    repository = get_repository()
+    invoice = repository.get(tracking_id)
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    submission_fields = InvoiceSubmission.model_fields.keys()
+    return {
+        "tracking_id": invoice["tracking_id"],
+        "correlation_id": invoice.get("correlation_id"),
+        "status": invoice["status"],
+        "revision": invoice.get("revision", 1),
+        "submitted_at": invoice["created_at"],
+        "updated_at": invoice["updated_at"],
+        "submission": {field: invoice.get(field) for field in submission_fields},
+        "decision": invoice.get("decision"),
+        "review_actions": repository.list_review_actions(tracking_id),
+        "duplicate_of": invoice.get("duplicate_of"),
+        "duplicates": repository.list_duplicates_of(tracking_id),
+        "payment": invoice.get("payment"),
+        "notifications": repository.notifications_for(tracking_id),
+    }
+
+
+@app.get("/notifications")
+def notifications(submitter_email: str):
+    return get_repository().list_notifications(submitter_email)
 
 
 @app.get("/approvals/queue")
@@ -256,6 +323,8 @@ def review_action(tracking_id: str, request: ReviewActionRequest, background_tas
         logger.info("review action %s on %s -> %s", request.action, tracking_id, target_status)
         if request.action == "approve":
             _start_payment(tracking_id, background_tasks)
+        else:
+            _notify(repository.get(tracking_id))
         return {"tracking_id": tracking_id, "status": target_status, "result": "applied"}
     invoice = repository.get(tracking_id)
     return {"tracking_id": tracking_id, "status": invoice["status"], "result": "replayed"}
@@ -272,6 +341,7 @@ def additional_info(tracking_id: str, info: AdditionalInfo, background_tasks: Ba
     if outcome == "duplicate":
         # the supplied invoice number matched an existing original: no re-evaluation
         logger.info("invoice %s marked duplicate of %s", tracking_id, invoice["duplicate_of"])
+        _notify(invoice)
         return {"tracking_id": tracking_id, "status": "duplicate", "duplicate_of": invoice["duplicate_of"]}
     background_tasks.add_task(_publish_received, invoice)
     logger.info("additional info for %s, re-evaluating as revision %d", tracking_id, invoice["revision"])
@@ -313,7 +383,9 @@ def handle_payment_result(event: dict):
             "executed_at": data.get("executed_at"),
             "released_at": data.get("released_at"),
         }
-        repository.apply_payment_result(data["tracking_id"], data["status"], summary, _utc_now())
+        applied = repository.apply_payment_result(data["tracking_id"], data["status"], summary, _utc_now())
+        if applied:
+            _notify(repository.get(data["tracking_id"]))
     except Exception:
         logger.exception("transient failure applying payment result for %s", data["tracking_id"])
         return events.EVENT_RETRY
@@ -377,6 +449,8 @@ def handle_invoice_decided(event: dict, background_tasks: BackgroundTasks):
         )
         if applied and data["status"] == "approved":
             _start_payment(data["tracking_id"], background_tasks)
+        if applied and data["status"] == "rejected":
+            _notify(repository.get(data["tracking_id"]))
     except Exception:
         logger.exception("transient failure applying decision for %s", data["tracking_id"])
         return events.EVENT_RETRY
