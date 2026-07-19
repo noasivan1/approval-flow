@@ -132,10 +132,12 @@ def test_optional_structured_fields_survive_forwarding(monkeypatch):
     assert response.status_code == 202
 
     for field in (
-        "vendor_known", "attendees", "invoice_number", "department",
+        "attendees", "invoice_number", "department",
         "tax_amount", "business_justification", "client_name", "travel_class", "date",
     ):
         assert forwarded[field] == payload[field]
+    # vendor_known is client input only in legacy payloads; it is stripped here
+    assert "vendor_known" not in forwarded
     assert forwarded["line_items"] == [
         {"description": "Team lunch", "quantity": 1, "unit_price": 38.89}
     ]

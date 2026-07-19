@@ -19,7 +19,6 @@ class InvoiceSubmission(BaseModel):
     note: str | None = None
     invoice_number: str | None = None
     department: str = Field(min_length=1)
-    vendor_known: bool | None = None
     attendees: int | None = Field(default=None, ge=1)
     line_items: list[LineItem] = []
     tax_amount: float | None = None
@@ -50,7 +49,6 @@ class AdditionalInfo(BaseModel):
     business_justification: str | None = None
     client_name: str | None = None
     travel_class: str | None = None
-    vendor_known: bool | None = None
     line_items: list[LineItem] | None = None
     tax_amount: float | None = None
     date: str | None = None

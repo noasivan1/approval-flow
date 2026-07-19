@@ -201,6 +201,7 @@ async def health():
 
 
 def _public_view(invoice: dict) -> dict:
+    # internal bookkeeping fields stay out of API responses
     hidden = ("duplicate_key", "published_at", "payment_published_at", "payment_flow_version")
     view = {key: value for key, value in invoice.items() if key not in hidden}
     if not view.get("duplicate_of"):

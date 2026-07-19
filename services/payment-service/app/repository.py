@@ -64,6 +64,7 @@ _SELECT = ", ".join(_PAYMENT_COLUMNS)
 
 
 def money(value) -> Decimal:
+    """Quantize to cents; budget arithmetic never touches binary floats."""
     return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
@@ -291,6 +292,8 @@ class PostgresPaymentRepository:
     def commit_paid(self, payment_id: str, executed_at: str) -> bool:
         self._ensure_table()
         with self._connect() as conn:
+            # the status guard makes this transition one-shot; the budget move
+            # rides the same transaction, so money can never move twice
             row = conn.execute(
                 "UPDATE payments SET status = 'paid', executed_at = %s, updated_at = %s "
                 "WHERE payment_id = %s AND status = 'reserved' RETURNING department, amount_usd",
@@ -309,6 +312,7 @@ class PostgresPaymentRepository:
     def fail_reserved(self, payment_id: str, reason: str, released_at: str) -> bool:
         self._ensure_table()
         with self._connect() as conn:
+            # same one-shot guard: the reservation is released exactly once
             row = conn.execute(
                 "UPDATE payments SET status = 'failed', failure_reason = %s, released_at = %s, updated_at = %s "
                 "WHERE payment_id = %s AND status = 'reserved' RETURNING department, amount_usd",

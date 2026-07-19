@@ -1,6 +1,13 @@
 import json
 import os
+import unicodedata
 from pathlib import Path
+
+
+def normalize_vendor(name: str) -> str:
+    """Canonical form for vendor identity: NFKC, trimmed, single spaces, casefolded."""
+    collapsed = " ".join(unicodedata.normalize("NFKC", name).split())
+    return collapsed.casefold()
 
 
 class PolicyConfig:
@@ -15,7 +22,7 @@ class PolicyConfig:
         self.travel_manager_approval_over_usd = float(raw["travel_manager_approval_over_usd"])
         self.fx_hard_stop_usd = float(raw["fx_hard_stop_usd"])
         self.fx_rates = {code.upper(): float(rate) for code, rate in raw.get("fx_rates", {}).items()}
-        self.known_vendors = {vendor.lower() for vendor in raw.get("known_vendors", [])}
+        self.known_vendors = {normalize_vendor(vendor) for vendor in raw.get("known_vendors", [])}
 
 
 def _resolve_path(path: str | None) -> str:

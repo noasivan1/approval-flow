@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+env:
+  # CI never calls external providers; all tests run against the stub
+  RECOMMENDATION_PROVIDER: stub
+
 jobs:
   backend-tests:
     runs-on: ubuntu-latest

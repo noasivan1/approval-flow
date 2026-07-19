@@ -69,7 +69,8 @@ def test_submission_publishes_received_event(monkeypatch):
     assert event["tracking_id"] == tracking_id
     assert event["correlation_id"] == "corr-abc"
     assert event["invoice"]["vendor"] == "Bistro 19"
-    assert event["invoice"]["vendor_known"] is True
+    # vendor_known is no longer a client field; the payload's copy is discarded
+    assert "vendor_known" not in event["invoice"]
 
     # marked published, so the sweep will not resend it
     assert get_repository().get(tracking_id)["published_at"] is not None

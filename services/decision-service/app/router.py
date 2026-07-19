@@ -1,7 +1,7 @@
 from datetime import date
 
 from .models import InvoiceData, Reason, Recommendation
-from .policy import PolicyConfig
+from .policy import PolicyConfig, normalize_vendor
 
 STATUS_BY_ROUTE = {
     "auto_approve": "approved",
@@ -13,9 +13,9 @@ _MATH_TOLERANCE = 0.01
 
 
 def _vendor_known(invoice: InvoiceData, policy: PolicyConfig) -> bool:
-    if invoice.vendor_known is not None:
-        return invoice.vendor_known
-    return invoice.vendor.lower() in policy.known_vendors
+    # the configured registry is the only authority; any client-supplied
+    # vendor_known value is ignored
+    return normalize_vendor(invoice.vendor) in policy.known_vendors
 
 
 def _to_usd(invoice: InvoiceData, policy: PolicyConfig) -> tuple[float, Reason | None]:
@@ -158,6 +158,13 @@ def evaluate(invoice: InvoiceData, policy: PolicyConfig, recommendation: Recomme
             detail=f"${amount_usd:,.2f} exceeds the ${policy.autonomy_ceiling_usd:,.0f} autonomy ceiling",
         ))
 
+    if recommendation.provider_error_category:
+        reasons.append(Reason(
+            rule_id="AI-PROVIDER-ERROR", code=recommendation.provider_error_category,
+            detail=f"recommendation provider failed ({recommendation.provider_error_category}); "
+                   "escalated to human review",
+        ))
+
     if recommendation.confidence < policy.autonomy_confidence:
         reasons.append(Reason(
             rule_id="AUTONOMY-CONFIDENCE", code="low_confidence",
@@ -165,6 +172,8 @@ def evaluate(invoice: InvoiceData, policy: PolicyConfig, recommendation: Recomme
                    f"{policy.autonomy_confidence:.2f} ({recommendation.rationale})",
         ))
 
+    # reject outranks escalation; anything flagged goes to a human, and only
+    # a fully clean invoice can auto-approve
     if reject_reasons:
         route = "reject"
         all_reasons = reject_reasons + reasons

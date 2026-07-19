@@ -49,10 +49,13 @@ def test_successful_processing_publishes_decision(monkeypatch):
         "event_id", "tracking_id", "correlation_id", "route", "status",
         "recommendation", "confidence", "rule_ids", "reasons",
         "plain_language_reason", "evaluated_at",
+        "provider", "model", "provider_error_category",
     ):
         assert field in decided
     assert decided["route"] == "auto_approve"
     assert decided["correlation_id"] == "test-corr"
+    assert decided["provider"] == "stub"
+    assert decided["provider_error_category"] is None
 
 
 def test_duplicate_delivery_publishes_once(monkeypatch):

@@ -61,6 +61,13 @@ def test_missing_department_is_rejected():
     assert response.status_code == 422
 
 
+def test_client_vendor_known_is_ignored_and_not_stored():
+    response = client.post("/invoices", json={**VALID_INVOICE, "vendor_known": True})
+    assert response.status_code == 201
+    lookup = client.get(f"/invoices/{response.json()['tracking_id']}").json()
+    assert "vendor_known" not in lookup
+
+
 def test_unknown_tracking_id_returns_404():
     response = client.get("/invoices/00000000-0000-0000-0000-000000000000")
     assert response.status_code == 404

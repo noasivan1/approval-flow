@@ -97,6 +97,9 @@ async def handle_invoice_received(event: dict):
             "revision": data.get("revision", 1),
             "recommendation": recommendation.suggestion,
             "confidence": recommendation.confidence,
+            "provider": recommendation.provider,
+            "model": recommendation.model,
+            "provider_error_category": recommendation.provider_error_category,
             "evaluated_at": datetime.now(timezone.utc).isoformat(),
             **decision,
         }
