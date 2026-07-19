@@ -37,6 +37,25 @@ def test_repo_fallback_when_env_unset(monkeypatch):
     assert config.autonomy_ceiling_usd == 250
 
 
+def test_vendor_registry_reloads_when_file_changes(tmp_path, monkeypatch):
+    raw = json.loads(_REPO_CONFIG.read_text(encoding="utf-8"))
+    config_file = tmp_path / "policy.json"
+    config_file.write_text(json.dumps(raw), encoding="utf-8")
+    monkeypatch.setenv("POLICY_CONFIG_PATH", str(config_file))
+
+    from app.policy import normalize_vendor
+
+    assert normalize_vendor("New Local Cafe") not in load_policy().known_vendors
+
+    raw["known_vendors"].append("New Local Cafe")
+    config_file.write_text(json.dumps(raw), encoding="utf-8")
+    stat = os.stat(config_file)
+    os.utime(config_file, (stat.st_atime, stat.st_mtime + 1))
+
+    # picked up without any restart
+    assert normalize_vendor("New Local Cafe") in load_policy().known_vendors
+
+
 def test_config_reloads_when_file_changes(tmp_path, monkeypatch):
     config_file = tmp_path / "policy.json"
     write_config(config_file, 100)

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from app.models import InvoiceData
+from app.models import InvoiceData, Recommendation
 from app.policy import PolicyConfig
 from app.recommendation import LocalStubProvider
 from app.router import evaluate
@@ -119,6 +119,99 @@ def test_known_vendor_registry_covers_missing_field():
     )
     decision = evaluate(invoice, POLICY, PROVIDER.recommend(invoice))
     assert "GLOBAL-VENDOR" not in decision["rule_ids"]
+
+
+def test_client_supplied_vendor_known_cannot_bypass_registry():
+    # even a small, receipted invoice claiming vendor_known=true must escalate
+    invoice = InvoiceData(
+        vendor="Unknown Shell Company",
+        vendor_known=True,
+        amount=42.0,
+        category="other",
+        receipt_present=True,
+        attendees=None,
+    )
+    decision = evaluate(invoice, POLICY, PROVIDER.recommend(invoice))
+    assert decision["route"] == "human_review"
+    assert "GLOBAL-VENDOR" in decision["rule_ids"]
+
+
+def test_client_cannot_mark_known_vendor_as_unknown_either():
+    invoice = InvoiceData(
+        vendor="Bistro 19",
+        vendor_known=False,
+        amount=42.0,
+        category="meals",
+        receipt_present=True,
+        attendees=1,
+    )
+    decision = evaluate(invoice, POLICY, PROVIDER.recommend(invoice))
+    assert "GLOBAL-VENDOR" not in decision["rule_ids"]
+    assert decision["route"] == "auto_approve"
+
+
+@pytest.mark.parametrize(
+    "vendor",
+    ["Bistro 19", "bistro 19", "BISTRO 19", "  Bistro 19  ", "Bistro    19", "Ｂistro 19"],
+)
+def test_vendor_normalization_variants_are_known(vendor):
+    invoice = InvoiceData(
+        vendor=vendor, amount=42.0, category="meals", receipt_present=True, attendees=1
+    )
+    decision = evaluate(invoice, POLICY, PROVIDER.recommend(invoice))
+    assert "GLOBAL-VENDOR" not in decision["rule_ids"], vendor
+
+
+def test_similar_vendor_names_are_not_known():
+    for vendor in ("Bistro 91", "Bistro", "Bistro 19 Ltd"):
+        invoice = InvoiceData(
+            vendor=vendor, amount=42.0, category="meals", receipt_present=True, attendees=1
+        )
+        decision = evaluate(invoice, POLICY, PROVIDER.recommend(invoice))
+        assert "GLOBAL-VENDOR" in decision["rule_ids"], vendor
+
+
+def test_provider_error_routes_to_human_review():
+    invoice = InvoiceData(
+        vendor="Bistro 19", amount=42.0, category="meals", receipt_present=True, attendees=1
+    )
+    error = Recommendation(
+        suggestion="review",
+        confidence=0.0,
+        rationale="recommendation provider unavailable (timeout); requires human review",
+        provider="gemini",
+        model="gemini-2.0-flash",
+        provider_error_category="timeout",
+    )
+    decision = evaluate(invoice, POLICY, error)
+    assert decision["route"] == "human_review"
+    assert "AI-PROVIDER-ERROR" in decision["rule_ids"]
+    reason = next(r for r in decision["reasons"] if r["rule_id"] == "AI-PROVIDER-ERROR")
+    assert reason["code"] == "timeout"
+
+
+def test_confident_gemini_approval_cannot_bypass_ceiling():
+    invoice = InvoiceData(
+        vendor="PixelForge", amount=300.0, category="saas", receipt_present=True
+    )
+    eager = Recommendation(
+        suggestion="approve", confidence=0.99, rationale="looks fine", provider="gemini"
+    )
+    decision = evaluate(invoice, POLICY, eager)
+    assert decision["route"] == "human_review"
+    assert "AUTONOMY-CEILING" in decision["rule_ids"]
+
+
+def test_confident_gemini_approval_cannot_bypass_unknown_vendor():
+    invoice = InvoiceData(
+        vendor="Unknown Shell Company", amount=42.0, category="other", receipt_present=True
+    )
+    eager = Recommendation(
+        suggestion="approve", confidence=0.99, rationale="looks fine", provider="gemini"
+    )
+    decision = evaluate(invoice, POLICY, eager)
+    assert decision["route"] == "human_review"
+    assert "GLOBAL-VENDOR" in decision["rule_ids"]
 
 
 def test_premium_travel_class_escalates():

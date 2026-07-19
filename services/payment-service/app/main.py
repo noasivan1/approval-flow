@@ -36,6 +36,7 @@ def _precheck_failure(request: PaymentRequest) -> str | None:
 
 def _new_payment_record(request: PaymentRequest, now: str) -> dict:
     return {
+        # derived from tracking_id, so a redelivered request builds the same record
         "payment_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"approvalflow/payment/{request.tracking_id}")),
         "tracking_id": request.tracking_id,
         "department": request.department,

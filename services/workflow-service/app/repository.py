@@ -541,6 +541,9 @@ class PostgresInvoiceRepository:
         self, tracking_id: str, status: str, decision: dict, updated_at: str, revision: int
     ) -> bool:
         self._ensure_table()
+        # applies only while the invoice is still undecided on this exact
+        # revision, so stale or replayed decisions change nothing; entering
+        # review also stamps the queue timestamp
         query = (
             "UPDATE invoices SET status = %s, decision = %s, updated_at = %s, "
             "review_requested_at = CASE WHEN %s = 'pending_review' THEN %s ELSE review_requested_at END, "
@@ -683,6 +686,9 @@ class PostgresInvoiceRepository:
 
     def start_payment(self, tracking_id: str, requested_at: str) -> bool:
         self._ensure_table()
+        # the single gate into payment: a second call finds the invoice no
+        # longer approved and does nothing, and pre-payment-feature rows
+        # (payment_flow_version NULL) never qualify
         query = (
             "UPDATE invoices SET status = 'payment_requested', payment_requested_at = %s, "
             "payment_published_at = NULL, updated_at = %s "

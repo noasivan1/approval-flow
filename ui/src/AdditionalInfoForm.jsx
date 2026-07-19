@@ -61,7 +61,7 @@ export default function AdditionalInfoForm({ trackingId, onSubmitted }) {
           checked={form.receipt_present}
           onChange={(e) => update("receipt_present", e.target.checked)}
         />
-        Receipt attached
+        Receipt provided
       </label>
       <label>
         Business justification

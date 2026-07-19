@@ -32,6 +32,9 @@ class Recommendation(BaseModel):
     suggestion: str
     confidence: float
     rationale: str
+    provider: str = "stub"
+    model: str | None = None
+    provider_error_category: str | None = None
 
 
 class Reason(BaseModel):

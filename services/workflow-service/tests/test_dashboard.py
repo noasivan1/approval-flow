@@ -36,6 +36,9 @@ def decided_event(tracking_id, status, route=None, amount_usd=42.0):
             "status": status,
             "recommendation": "review",
             "confidence": 0.9,
+            "provider": "stub",
+            "model": None,
+            "provider_error_category": None,
             "rule_ids": ["AUTONOMY-CEILING"],
             "reasons": [{"rule_id": "AUTONOMY-CEILING", "code": "over_ceiling", "detail": "over"}],
             "plain_language_reason": "reason",
@@ -147,6 +150,9 @@ def test_trail_contains_full_history(monkeypatch):
     assert trail["decision"]["rule_ids"] == ["AUTONOMY-CEILING"]
     assert trail["decision"]["recommendation"] == "review"
     assert trail["decision"]["confidence"] == 0.9
+    # provider metadata is part of the persisted decision and the trail
+    assert trail["decision"]["provider"] == "stub"
+    assert trail["decision"]["provider_error_category"] is None
     assert len(trail["review_actions"]) == 1
     assert trail["review_actions"][0]["action"] == "approve"
     assert trail["duplicates"] == [duplicate]

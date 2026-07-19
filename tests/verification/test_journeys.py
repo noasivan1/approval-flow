@@ -16,9 +16,10 @@ BASE_URL = os.getenv("VERIFY_BASE_URL", "http://localhost:8000")
 RUN = uuid.uuid4().hex[:8].upper()  # unique suffix so repeat runs never collide
 
 POLL_INTERVAL = 2
-# generous enough to cover a cold-started stack, whose first events may wait
-# for the 30s retry sweeps
-POLL_TIMEOUT = 60
+# generous enough to cover a cold-started stack: first events may wait for the
+# 30s retry sweeps, and pub/sub redelivery after a provider switch can take
+# around a minute to be claimed
+POLL_TIMEOUT = 120
 
 
 def _get(path, **kwargs):
@@ -84,6 +85,19 @@ def psql(query):
     )
     assert result.returncode == 0, f"psql failed: {result.stderr}"
     return result.stdout.strip()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def budget_headroom():
+    """Each run spends real budget (J2 pays $1,820 from sales), so repeated
+    runs would eventually drain the accounts. Raise the totals by roughly one
+    run's spend so verification stays repeatable without resetting history."""
+    psql(
+        "UPDATE budget_accounts SET total = total + 2000 WHERE department = 'sales-2026Q2'"
+    )
+    psql(
+        "UPDATE budget_accounts SET total = total + 500 WHERE department = 'engineering-2026Q2'"
+    )
 
 
 INV_1001 = {

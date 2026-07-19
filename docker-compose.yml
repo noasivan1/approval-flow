@@ -98,6 +98,10 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # mounted config so threshold changes apply without rebuilding the image
       POLICY_CONFIG_PATH: /data/policy-config.json
+      RECOMMENDATION_PROVIDER: ${RECOMMENDATION_PROVIDER:-gemini}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-latest}
+      GEMINI_TIMEOUT_SECONDS: ${GEMINI_TIMEOUT_SECONDS:-10}
+      GEMINI_MAX_RETRIES: ${GEMINI_MAX_RETRIES:-2}
     volumes:
       - ./data:/data:ro
     depends_on:
@@ -105,6 +109,9 @@ services:
 
   decision-service-dapr:
     image: daprio/daprd:1.14.4
+    environment:
+      # exposed to the app via the Dapr secret store; value comes from .env
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     command:
       - "./daprd"
       - "-app-id"

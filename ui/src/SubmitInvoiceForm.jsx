@@ -8,7 +8,6 @@ const initialForm = {
   currency: "USD",
   category: "meals",
   receipt_present: true,
-  vendor_known: true,
   attendees: "1",
   invoice_number: "",
   department: "engineering-2026Q2",
@@ -123,15 +122,7 @@ export default function SubmitInvoiceForm() {
           checked={form.receipt_present}
           onChange={(e) => update("receipt_present", e.target.checked)}
         />
-        Receipt attached
-      </label>
-      <label className="form__checkbox">
-        <input
-          type="checkbox"
-          checked={form.vendor_known}
-          onChange={(e) => update("vendor_known", e.target.checked)}
-        />
-        Known vendor
+        Receipt provided
       </label>
       <label>
         Invoice number (optional)

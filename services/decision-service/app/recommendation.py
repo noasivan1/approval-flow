@@ -1,6 +1,9 @@
+import logging
 import os
 
 from .models import InvoiceData, Recommendation
+
+logger = logging.getLogger("decision-service.recommendation")
 
 
 class RecommendationProvider:
@@ -32,8 +35,30 @@ class LocalStubProvider(RecommendationProvider):
         return Recommendation(suggestion=suggestion, confidence=confidence, rationale=rationale)
 
 
+class UnsupportedProvider(RecommendationProvider):
+    """Misconfigured provider name: every invoice escalates instead of crashing."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def recommend(self, invoice: InvoiceData) -> Recommendation:
+        return Recommendation(
+            suggestion="review",
+            confidence=0.0,
+            rationale=f"recommendation provider '{self._name}' is not supported; requires human review",
+            provider=self._name,
+            provider_error_category="unsupported_provider",
+        )
+
+
 def get_provider() -> RecommendationProvider:
     name = os.getenv("RECOMMENDATION_PROVIDER", "stub")
     if name == "stub":
         return LocalStubProvider()
-    raise ValueError(f"unknown recommendation provider: {name}")
+    if name == "gemini":
+        # imported here so stub-only runs never load the gemini module
+        from .gemini import GeminiRecommendationProvider
+
+        return GeminiRecommendationProvider()
+    logger.error("unknown recommendation provider %r; all invoices will escalate", name)
+    return UnsupportedProvider(name)
