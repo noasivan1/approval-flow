@@ -30,6 +30,31 @@ class InvoiceSubmission(BaseModel):
     date: str | None = None
 
 
+class SubmissionResult(BaseModel):
+    """Reply to an invoice submission; duplicate_of appears only for duplicates."""
+
+    tracking_id: str
+    status: str
+    duplicate_of: str | None = None
+
+
+class ReviewActionResult(BaseModel):
+    tracking_id: str
+    status: str
+    result: str
+
+
+class AdditionalInfoResult(BaseModel):
+    """Reply to an additional-info submission. revision is set when the invoice
+    was sent for re-evaluation; duplicate_of when the new details revealed a
+    duplicate instead."""
+
+    tracking_id: str
+    status: str
+    revision: int | None = None
+    duplicate_of: str | None = None
+
+
 class ReviewActionRequest(BaseModel):
     action: Literal["approve", "reject", "request_more_info"]
     reviewer_email: str = Field(min_length=3)
